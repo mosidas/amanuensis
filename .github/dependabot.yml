@@ -7,6 +7,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # codeql-action の init と analyze は同じ版でないと analyze が失敗する(PR #2・#3 で CI が落ちた)
+      codeql-action:
+        patterns:
+          - "github/codeql-action"
   - package-ecosystem: "swift"
     directory: "/"
     schedule:
