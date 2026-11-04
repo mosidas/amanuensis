@@ -18,8 +18,10 @@ final class MenuBar: NSObject {
 
   /// 失敗を利用者に伝える。権限の不足は警告で、それ以外は通知で伝える。
   static func present(_ problem: RecordingProblem) {
-    if case .missingPermissions(let missing) = problem {
-      if alert(problem, buttons: ["システム設定を開く", "閉じる"]) == .alertFirstButtonReturn,
+    if case .missingPermissions(let missing) = problem,
+      let action = RecordingText.action(for: problem)
+    {
+      if alert(problem, buttons: [action, "閉じる"]) == .alertFirstButtonReturn,
         let first = missing.first
       {
         NSWorkspace.shared.open(first.settingsURL)
@@ -86,8 +88,8 @@ final class MenuBar: NSObject {
     clock?.invalidate()
     clock = nil
     guard case .recording = state else { return }
-    let clock = Timer(timeInterval: 1, repeats: true) { _ in
-      MainActor.assumeIsolated { [weak self] in self?.tick() }
+    let clock = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.tick() }
     }
     // メニューを開いている間(イベントトラッキングのモード)も経過時間を進める。
     RunLoop.main.add(clock, forMode: .common)
