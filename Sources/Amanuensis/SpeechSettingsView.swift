@@ -137,6 +137,7 @@ struct SpeechSettingsView: View {
         }
       }
     }
+    .onChange(of: state) { logOpenFailed = false }
   }
 
   private func openLog() {
