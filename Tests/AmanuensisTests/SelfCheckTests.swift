@@ -103,6 +103,16 @@ private let audio = URL(filePath: "/tmp/sample.wav")
     ))
 }
 
+@Test func selfCheckPassesAtThreshold() async throws {
+  let (executable, _) = try fakeSpeech("echo 'XYZdefghijklmnopqrst'; exit 0")
+  let log = temporaryLog()
+  let result = try await runSelfCheck(
+    executable: executable, model: model, audio: audio, reference: "abcdefghijklmnopqrst",
+    timeout: .seconds(10), log: log)
+  #expect(result.cer == 0.15)
+  #expect(try readLog(log).contains(" selfcheck passed cer=0.1500 threshold=0.15 "))
+}
+
 @Test func selfCheckLogMasksHomeAndKeepsOneLine() async throws {
   let (executable, _) = try fakeSpeech(#"printf '%s\n%s\n' "$HOME/x" second >&2; exit 1"#)
   let log = temporaryLog()
@@ -115,6 +125,22 @@ private let audio = URL(filePath: "/tmp/sample.wav")
   #expect(contents.split(separator: "\n").count == 1, "1 回の確認で 1 行")
   #expect(contents.contains(#"stderr=~/x\nsecond\n"#))
   #expect(!contents.contains(NSHomeDirectory()), "ホームのパスを出さない")
+}
+
+@Test func selfCheckLogMasksHomeCutByTail() async throws {
+  let home = NSHomeDirectory()
+  // 末尾 512 バイトの切れ目がホームのパスの 3 文字目に来る長さにする。
+  let padding = String(repeating: "x", count: 512 - (home.utf8.count - 3) - 1)
+  let (executable, _) = try fakeSpeech("printf '%s%s\\n' '\(home)' '\(padding)' >&2; exit 1")
+  let log = temporaryLog()
+  await #expect(throws: SelfCheckError.exited(status: 1)) {
+    try await runSelfCheck(
+      executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
+      log: log)
+  }
+  let contents = try readLog(log)
+  #expect(contents.contains("stderr=~\(padding)\\n"))
+  #expect(!contents.contains((home as NSString).lastPathComponent), "利用者名を出さない")
 }
 
 @Test func selfCheckLogAppends() async throws {

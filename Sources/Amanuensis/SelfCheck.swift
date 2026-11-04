@@ -76,7 +76,10 @@ func runSelfCheck(
       "selfcheck failed error.type=\(type, privacy: .public) status=\(status, privacy: .public) stderr=\(oneLine(tail), privacy: .private)"
     )
     // ファイルは利用者が開いて共有しうるので、個人名の入ったホームのパスを伏せる。
-    let maskedTail = oneLine(tail.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+    // 切り詰めの前に伏せる。切れ目がホームのパスの途中に来ると、残りの部分は一致せず利用者名が残る。
+    let masked = String(decoding: stderrData, as: UTF8.self)
+      .replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    let maskedTail = oneLine(String(decoding: Data(masked.utf8.suffix(512)), as: UTF8.self))
     appendSelfCheckLog(
       "selfcheck failed error.type=\(type) status=\(status) stderr=\(maskedTail)", to: log)
     throw failure
