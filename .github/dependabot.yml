@@ -1,0 +1,13 @@
+# GitHub Actions の uses: に固定したコミット SHA と SwiftPM の依存の更新 PR を Dependabot に作らせる設定。
+# 選択肢の一覧: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "weekly"
