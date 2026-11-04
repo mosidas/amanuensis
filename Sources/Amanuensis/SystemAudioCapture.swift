@@ -30,7 +30,7 @@ func checkRecordingPermissions() async -> [Permission] {
 enum SystemAudioAccess {
   case granted, denied, undetermined, unavailable
 
-  private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int
+  private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
   private typealias Request =
     @convention(c) (CFString, CFDictionary?, @escaping @convention(block) (Bool) -> Void) -> Void
 
@@ -107,8 +107,9 @@ nonisolated private func openCapture(
     "capture started microphone=\(Int(formats.microphone.sampleRate), privacy: .public)/\(formats.microphone.channelCount, privacy: .public) system_audio=\(Int(formats.systemAudio.sampleRate), privacy: .public)/\(formats.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public)"
   )
   return CaptureSession {
+    pipe.markStopping()
     pipe.teardown.run()
-    // AudioDeviceStop の前に HAL が ioQueue へ積んだ呼び出しを流し切ってから閉じる。
+    // HAL は IO スレッドから ioQueue へ dispatch_sync するため、AudioDeviceStop の後は通常は空である。念のため流し切ってから閉じる。
     pipe.ioQueue.sync {}
     return try await pipe.finish()
   }
@@ -320,12 +321,17 @@ private final class CapturePipe: @unchecked Sendable {
     }
   }
 
+  /// 停止を始めた印を立てる。壊す処理より前に呼ぶ。届いた音声はこの後も書く。
+  // リスナーを外した後も、集約デバイスを壊してから 1〜5 ms 後に DeviceIsAlive の通知が writerQueue へ積まれる(実測)。
+  // 壊す前に writerQueue の上で印を立て、停止で起きた通知を中断として扱わない。
+  func markStopping() {
+    writerQueue.sync { ended = true }
+  }
+
   /// writer を閉じて秒数を返す。
   func finish() async throws -> TimeInterval {
     try await withCheckedThrowingContinuation { continuation in
       writerQueue.async { [self] in
-        // リスナーを外した後も、集約デバイスを壊したときの通知が届く(実測)。止めた後の通知は中断として扱わない。
-        ended = true
         let result = Result { try writer.finish() }
         logger.info(
           "capture stopped duration_s=\((try? result.get()) ?? 0, format: .fixed(precision: 1), privacy: .public) dropped_frames=\(self.writer.droppedFrames, privacy: .public) invalid_buffers=\(self.invalidBuffers, privacy: .public) system_audio_heard=\(self.heardSystemAudio, privacy: .public)"
