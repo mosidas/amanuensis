@@ -16,7 +16,7 @@ enum RecordingSource {
 
 /// 2 つの音源を時刻で揃え、左にマイク・右にシステム音声を置いた 48 kHz・16 bit・2 ch の CAF に書く。
 /// 書き出しは届いた音声の量で決まり、書き終えていない区間が 5 秒に達するたびに書く。
-/// 呼び出し元は 1 つの直列の実行文脈からだけ呼ぶ。
+/// 呼び出し元は 1 つの直列の実行文脈からだけ呼ぶ。`finish()` の後に届いたバッファーは捨てて `droppedFrames` に数える。
 final class StereoRecordingWriter {
   private static let rate = 48_000.0
   private static let monoFormat = AVAudioFormat(
@@ -31,7 +31,7 @@ final class StereoRecordingWriter {
 
   // shortcut: 非圧縮(約 691 MB/時), 保存先の容量が問題になったら後続で AAC に変換する
   // AVAudioFile は書いた音声をプロセス内に最大 4,096 フレーム(約 85 ms)抱える(実測)。強制終了ではその分も失う。
-  private var file: AVAudioFile?
+  private let file: AVAudioFile
   private var origin: TimeInterval?
   private var written = 0
   /// 音源ごとの、書き出し済みの位置 `written` より後の音声。添字は `RecordingSource.channel`。
@@ -55,6 +55,10 @@ final class StereoRecordingWriter {
   func append(_ buffer: AVAudioPCMBuffer, from source: RecordingSource, at time: TimeInterval)
     throws
   {
+    guard file.isOpen else {
+      droppedFrames += Int(buffer.frameLength)
+      return
+    }
     let samples = try monoSamples(buffer, from: source)
     let origin = self.origin ?? time
     self.origin = origin
@@ -78,15 +82,16 @@ final class StereoRecordingWriter {
     }
   }
 
-  /// 残りを両方の音源の末尾の大きい方まで書いて閉じ、書いた秒数を返す。
+  /// 残りを両方の音源の末尾の大きい方まで書いて閉じ、書いた秒数を返す。閉じた後は書かずに同じ秒数を返す。
   func finish() throws -> TimeInterval {
-    try write(frames: max(pending[0].count, pending[1].count))
-    file = nil
+    if file.isOpen {
+      defer { file.close() }
+      try write(frames: max(pending[0].count, pending[1].count))
+    }
     return Double(written) / Self.rate
   }
 
   private func write(frames: Int) throws {
-    guard let file else { preconditionFailure("finish() の後は書けない") }
     guard frames > 0 else { return }
     let buffer = AVAudioPCMBuffer(
       pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames))!

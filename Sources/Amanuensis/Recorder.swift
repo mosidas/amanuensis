@@ -76,7 +76,7 @@ enum RecorderState: Equatable {
       return
     }
     let activity = ProcessInfo.processInfo.beginActivity(
-      options: [.userInitiated, .idleSystemSleepDisabled], reason: "amanuensis が録音しています")
+      options: [.userInitiated, .idleSystemSleepDisabled], reason: "amanuensis is recording")
     let file = meeting.appending(path: "recording.caf")
     let onInterrupt: @Sendable (RecordingProblem) -> Void = { [weak self] problem in
       Task { @MainActor in self?.interrupt(meeting, problem) }
@@ -218,14 +218,8 @@ extension RecordingProblem {
   }
 }
 
-// ステップ 4 で ScreenCaptureKit の取り込みに置き換える
-@MainActor private func startProductionCapture(
-  _ file: URL, _ onInterrupt: @escaping @Sendable (RecordingProblem) -> Void
-) async throws -> CaptureSession {
-  throw RecordingProblem.captureFailed
-}
-
 // main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
 @MainActor let recorder = Recorder(
-  folder: RecordingFolder(), missingPermissions: { [] }, startCapture: startProductionCapture,
+  folder: RecordingFolder(), missingPermissions: checkRecordingPermissions,
+  startCapture: startSystemAudioCapture,
   report: MenuBar.present)

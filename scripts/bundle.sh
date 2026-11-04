@@ -46,7 +46,11 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>15.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>会議の自分の声を録音するために使います。</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>録音を書類フォルダーの amanuensis に保存するために使います。</string>
 </dict>
 </plist>
 PLIST

@@ -94,8 +94,11 @@ private func mean(_ samples: ArraySlice<Float>) -> Float {
     try feed(writer, .microphone, constant(0.5, sampleRate: 44_100, channels: 2), seconds: 3)
     _ = try writer.finish()
 
-    let file = try AVAudioFile(forReading: url)
-    #expect(abs(file.length - 144_000) <= 100)
+    let recorded = try Recorded(url)
+    #expect(abs(recorded.file.length - 144_000) <= 100)
+    #expect(
+      abs(mean(recorded.left[Int(0.5 * rate)..<Int(2.5 * rate)]) - 0.5) < 0.01,
+      "44.1 kHz・ステレオのマイクも左に同じ大きさで入る")
   }
 }
 
@@ -126,16 +129,19 @@ private func mean(_ samples: ArraySlice<Float>) -> Float {
     let writer = try StereoRecordingWriter(url: url)
     let microphone = try constant(0.5)
     let systemAudio = try constant(-0.5)
+    var maxLag = 0.0
     for step in 0..<2000 {
-      try writer.append(microphone, from: .microphone, at: Double(step) / 100)
-      try writer.append(systemAudio, from: .systemAudio, at: Double(step) / 100)
+      for (source, buffer) in [
+        (RecordingSource.microphone, microphone), (.systemAudio, systemAudio),
+      ] {
+        try writer.append(buffer, from: source, at: Double(step) / 100)
+        let fed = Double(step + 1) / 100
+        let onDisk = Double(try AVAudioFile(forReading: url).length) / rate
+        #expect(onDisk <= fed)
+        maxLag = max(maxLag, fed - onDisk)
+      }
     }
-
-    try withExtendedLifetime(writer) {
-      let file = try AVAudioFile(forReading: url)
-      #expect(file.length >= lowerBoundWhileRecording, "強制終了で失う音声は 6.1 秒以内")
-      #expect(file.length <= AVAudioFramePosition(20 * rate))
-    }
+    #expect(maxLag <= 6.1, "強制終了で失う音声は渡したどの時点でも 6.1 秒以内")
   }
 }
 
@@ -149,5 +155,46 @@ private func mean(_ samples: ArraySlice<Float>) -> Float {
       #expect(recorded.file.length >= lowerBoundWhileRecording, "システム音声が無くても書き進む")
       #expect(recorded.right.allSatisfy { $0 == 0 }, "システム音声が無い右は無音")
     }
+  }
+}
+
+@Test func alignsOverlapsAndGapsByTime() throws {
+  try withTemporaryFile { url in
+    let writer = try StereoRecordingWriter(url: url)
+    let tick = try constant(0.5)
+    let longer = try #require(AVAudioPCMBuffer(pcmFormat: tick.format, frameCapacity: 9_600))
+    longer.frameLength = 9_600
+    longer.floatChannelData![0].update(repeating: 0.5, count: 9_600)
+    try feed(writer, .microphone, tick, seconds: 1)
+    try writer.append(longer, from: .microphone, at: 0.9)
+    #expect(writer.droppedFrames == 4_800, "0.1 秒の重なりは捨てる")
+    try writer.append(tick, from: .microphone, at: 1.1)
+    try writer.append(tick, from: .microphone, at: 1.15)
+    try writer.append(tick, from: .microphone, at: 1.28)
+    _ = try writer.finish()
+
+    let recorded = try Recorded(url)
+    #expect(writer.droppedFrames == 4_800)
+    #expect(recorded.file.length == AVAudioFramePosition(1.29 * rate), "重なりで位置がずれない")
+    #expect(
+      recorded.left[..<Int(1.12 * rate)].allSatisfy { abs($0 - 0.5) < 0.001 },
+      "0.04 秒の隙間は続けて置く")
+    #expect(
+      recorded.left[Int(1.12 * rate)..<Int(1.28 * rate)].allSatisfy { $0 == 0 },
+      "0.16 秒の隙間は無音で埋める")
+    #expect(recorded.left[Int(1.28 * rate)...].allSatisfy { abs($0 - 0.5) < 0.001 })
+  }
+}
+
+@Test func ignoresBuffersAfterFinish() throws {
+  try withTemporaryFile { url in
+    let writer = try StereoRecordingWriter(url: url)
+    try feed(writer, .microphone, constant(0.5), seconds: 1)
+    let seconds = try writer.finish()
+    try writer.append(constant(0.5), from: .microphone, at: 1)
+
+    #expect(writer.droppedFrames == 480, "閉じた後のバッファーは捨てて数える")
+    #expect(try writer.finish() == seconds, "閉じた後の finish は同じ秒数を返す")
+    #expect(try AVAudioFile(forReading: url).length == AVAudioFramePosition(rate))
   }
 }
