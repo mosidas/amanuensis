@@ -1,0 +1,10 @@
+pre-commit:
+  commands:
+    lint:
+      run: swift format lint --strict --recursive Package.swift Sources Tests
+    secrets:
+      run: betterleaks git --pre-commit --staged --redact
+pre-push:
+  commands:
+    test:
+      run: scripts/test.sh
