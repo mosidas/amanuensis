@@ -22,6 +22,11 @@ app=dist/Amanuensis.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$(swift build -c release --show-bin-path)/Amanuensis" "$app/Contents/MacOS/Amanuensis"
+# 動作確認用の音声は本人が録音して置く。無いビルドでは動作確認が「音声なし」になる。
+if [ -d Resources/SelfCheck ]; then
+  mkdir -p "$app/Contents/Resources"
+  cp -R Resources/SelfCheck "$app/Contents/Resources/SelfCheck"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
