@@ -31,6 +31,9 @@ func showSettings() {
 private struct SettingsView: View {
   var body: some View {
     Form {
+      Section("録音") {
+        RecordingSettingsView(folder: RecordingFolder())
+      }
       Section("音声認識") {
         SpeechSettingsView(
           state: speechSetup.state, selfCheck: speechSetup.selfCheck,
