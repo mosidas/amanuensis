@@ -15,6 +15,7 @@ struct SpeechInstallation: Sendable {
   var runtimeDirectory: URL { directory.appending(path: "runtime") }
   var executable: URL { runtimeDirectory.appending(path: "speech") }
   var modelFile: URL { directory.appending(path: model.fileName) }
+  var selfCheckLog: URL { directory.appending(path: "selfcheck.log") }
   var isInstalled: Bool { exists(executable) && exists(modelFile) }
 
   static let standard = SpeechInstallation(
