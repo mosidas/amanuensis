@@ -78,6 +78,7 @@ extension URLSession {
     case .downloading, .verifying: return
     default: break
     }
+    selfCheck = .idle
     let needsRuntime = !exists(installation.executable)
     let needsModel = !exists(installation.modelFile)
     let pending = [
