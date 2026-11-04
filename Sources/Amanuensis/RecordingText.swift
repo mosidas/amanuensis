@@ -5,7 +5,7 @@ enum RecordingText {
   static func title(for problem: RecordingProblem) -> String {
     switch problem {
     case .missingPermissions(let missing):
-      switch (missing.contains(.microphone), missing.contains(.screenAndSystemAudio)) {
+      switch (missing.contains(.microphone), missing.contains(.systemAudio)) {
       case (true, true): "マイクとシステム音声の録音が許可されていません"
       case (true, false): "マイクの使用が許可されていません"
       case (false, _): "システム音声の録音が許可されていません"
@@ -21,12 +21,12 @@ enum RecordingText {
   static func body(for problem: RecordingProblem) -> String {
     switch problem {
     case .missingPermissions(let missing):
-      switch (missing.contains(.microphone), missing.contains(.screenAndSystemAudio)) {
+      switch (missing.contains(.microphone), missing.contains(.systemAudio)) {
       case (true, true):
-        "システム設定の「マイク」と「画面収録とシステムオーディオ録音」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。"
+        "システム設定の「マイク」と、「画面収録とシステムオーディオ録音」にある「システムオーディオ録音のみ」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。"
       case (true, false): "システム設定の「マイク」で amanuensis を許可してから、もう一度録音を開始してください。"
       case (false, _):
-        "システム設定の「画面収録とシステムオーディオ録音」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。"
+        "システム設定の「画面収録とシステムオーディオ録音」にある「システムオーディオ録音のみ」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。"
       }
     case .folderMissing: "保存先のフォルダーが見つかりません。設定で保存先を選び直してください。"
     case .folderNotWritable: "保存先のフォルダーに書き込めません。フォルダーのアクセス権を確かめるか、設定で別の保存先を選んでください。"
@@ -50,7 +50,7 @@ extension Permission {
     switch self {
     case .microphone:
       URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
-    case .screenAndSystemAudio:
+    case .systemAudio:
       URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
     }
   }

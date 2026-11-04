@@ -4,7 +4,7 @@ import os
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "recording")
 
 enum Permission: CaseIterable, Equatable {
-  case microphone, screenAndSystemAudio
+  case microphone, systemAudio
 }
 
 enum RecordingProblem: Error, Equatable {

@@ -47,6 +47,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <true/>
   <key>LSMinimumSystemVersion</key>
   <string>15.0</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>会議の相手の声を録音するために使います。</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>会議の自分の声を録音するために使います。</string>
   <key>NSDocumentsFolderUsageDescription</key>
