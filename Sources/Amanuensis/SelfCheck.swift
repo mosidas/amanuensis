@@ -72,7 +72,7 @@ func runSelfCheck(
     let tail = String(decoding: stderrData.suffix(512), as: UTF8.self)
       .replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\n", with: "\\n")
     logger.error(
-      "selfcheck failed error.type=\(type, privacy: .public) status=\(status, privacy: .public) stderr=\(tail, privacy: .public)"
+      "selfcheck failed error.type=\(type, privacy: .public) status=\(status, privacy: .public) stderr=\(tail, privacy: .private)"
     )
     throw failure
   }
@@ -97,7 +97,8 @@ func runBundledSelfCheck(_ installation: SpeechInstallation) async -> SelfCheckS
       try await runSelfCheck(
         executable: installation.executable, model: installation.modelFile, audio: audio,
         reference: reference,
-        // shortcut: 30 秒の音声に対する仮の値, 実測が出たら見直す
+        // 実測: Apple Silicon の Metal で同梱の 30.67 秒の音声を 0.6 秒で処理した(読み込み 0.25 秒、認識 0.321 秒、RTFx 95.4)。
+        // 120 秒はその約 200 倍で、Metal が使えない環境と初回のモデル読み込みの遅さを見込んだ上限である。
         timeout: .seconds(120)))
   } catch {
     return .failed(error)

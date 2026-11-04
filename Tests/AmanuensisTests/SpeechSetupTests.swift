@@ -230,6 +230,22 @@ private struct Harness {
 }
 
 @MainActor
+@Test func clearsSelfCheckResultWhenDownloadStarts() async throws {
+  let harness = Harness()
+  let setup = harness.makeSetup()
+  await setup.download()
+  await setup.runSelfCheck()
+  #expect(setup.selfCheck != .idle, "動作確認の結果が残っている")
+
+  try FileManager.default.removeItem(at: harness.installation.modelFile)
+  setup.refresh()
+  await setup.download()
+
+  #expect(setup.state == .installed)
+  #expect(setup.selfCheck == .idle, "再ダウンロードの後に前回の動作確認の結果を出さない")
+}
+
+@MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_E2E"] == "1"))
 func realDownloadInstallsRuntimeAndModel() async {
   let setup = SpeechSetup()
