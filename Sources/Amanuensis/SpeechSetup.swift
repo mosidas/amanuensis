@@ -48,6 +48,7 @@ extension URLSession {
 /// ランタイムとモデルの取得の状態を持つ。状態の持ち主はこの型だけである。
 @MainActor @Observable final class SpeechSetup {
   private(set) var state = SetupState.notInstalled
+  private(set) var selfCheck = SelfCheckState.idle
   let installation: SpeechInstallation
   private let session: URLSession
   private let availableCapacity: (URL) throws -> Int64
@@ -133,6 +134,13 @@ extension URLSession {
     }
     logger.info("setup installed")
     state = .installed
+  }
+
+  /// 同梱の音声で動作確認する。動作確認の途中に呼ばれたら何もしない。
+  func runSelfCheck() async {
+    guard selfCheck != .running else { return }
+    selfCheck = .running
+    selfCheck = await runBundledSelfCheck(installation)
   }
 
   private func destination(of file: RemoteFile) -> URL {

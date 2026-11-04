@@ -33,8 +33,10 @@ private struct SettingsView: View {
     Form {
       Section("音声認識") {
         SpeechSettingsView(
-          state: speechSetup.state, folder: speechSetup.installation.directory,
-          onDownload: { Task { await speechSetup.download() } })
+          state: speechSetup.state, selfCheck: speechSetup.selfCheck,
+          folder: speechSetup.installation.directory,
+          onDownload: { Task { await speechSetup.download() } },
+          onSelfCheck: { Task { await speechSetup.runSelfCheck() } })
       }
     }
     .formStyle(.grouped)
