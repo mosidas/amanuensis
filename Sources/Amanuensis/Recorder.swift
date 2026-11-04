@@ -38,6 +38,10 @@ enum RecorderState: Equatable {
   private let startCapture: StartCapture
   private let report: @MainActor (RecordingProblem) -> Void
   private let startTimeout: Duration
+  /// 準備中の会議フォルダー。準備中に届いた中断を、この会議のものか見分ける。
+  private var startingMeeting: URL?
+  /// 準備中に届いた中断。開始が戻った直後に処理する。
+  private var interruptedWhileStarting: RecordingProblem?
 
   init(
     folder: RecordingFolder, missingPermissions: @escaping () async -> [Permission],
@@ -75,6 +79,11 @@ enum RecorderState: Equatable {
       refuse(error)
       return
     }
+    startingMeeting = meeting
+    defer {
+      startingMeeting = nil
+      interruptedWhileStarting = nil
+    }
     let activity = ProcessInfo.processInfo.beginActivity(
       options: [.userInitiated, .idleSystemSleepDisabled], reason: "amanuensis is recording")
     let file = meeting.appending(path: "recording.caf")
@@ -91,6 +100,21 @@ enum RecorderState: Equatable {
       try? FileManager.default.removeItem(at: meeting)
       ProcessInfo.processInfo.endActivity(activity)
       refuse(.captureFailed)
+      return
+    }
+    if let problem = interruptedWhileStarting {
+      logger.error(
+        "recording failed step=record error.type=\(problem.logName, privacy: .public) app.error.origin=system folder.name=\(meeting.lastPathComponent, privacy: .public)"
+      )
+      do {
+        _ = try await session.stop()
+      } catch {
+        logger.error(
+          "recording failed step=stop error.type=save_failed app.error.origin=system folder.name=\(meeting.lastPathComponent, privacy: .public)"
+        )
+      }
+      ProcessInfo.processInfo.endActivity(activity)
+      refuse(problem)
       return
     }
     logger.info("recording started folder.name=\(meeting.lastPathComponent, privacy: .public)")
@@ -112,11 +136,13 @@ enum RecorderState: Equatable {
       try FileManager.default.removeItem(at: recording.folder)
     } catch {
       logger.error(
-        "recording failed step=discard error.type=file_system app.error.origin=system")
+        "recording failed step=discard error.type=file_system app.error.origin=system folder.name=\(recording.folder.lastPathComponent, privacy: .public)"
+      )
       report(.discardFailed)
       return
     }
-    logger.info("recording discarded")
+    logger.info(
+      "recording discarded folder.name=\(recording.folder.lastPathComponent, privacy: .public)")
   }
 
   /// 取り込みを止めて待機中に戻す。閉じたファイルの秒数を返し、止められなければ nil を返す。
@@ -129,19 +155,27 @@ enum RecorderState: Equatable {
     do {
       let duration = try await recording.session.stop()
       logger.info(
-        "recording stopped duration_s=\(duration, format: .fixed(precision: 1), privacy: .public)")
+        "recording stopped duration_s=\(duration, format: .fixed(precision: 1), privacy: .public) folder.name=\(recording.folder.lastPathComponent, privacy: .public)"
+      )
       return duration
     } catch {
-      logger.error("recording failed step=stop error.type=save_failed app.error.origin=system")
+      logger.error(
+        "recording failed step=stop error.type=save_failed app.error.origin=system folder.name=\(recording.folder.lastPathComponent, privacy: .public)"
+      )
       return nil
     }
   }
 
-  /// 外殻が録音中の取り込みが止まったと伝えたとき。止まった録音がまだ録音中のときだけ待機中へ戻す。
+  /// 外殻が取り込みが止まったと伝えたとき。止まった録音がまだ録音中のときだけ待機中へ戻す。
+  /// 準備中なら覚えておき、開始が戻った直後に `start` が処理する。
   private func interrupt(_ meeting: URL, _ problem: RecordingProblem) {
+    if state == .starting, startingMeeting == meeting {
+      interruptedWhileStarting = problem
+      return
+    }
     guard case .recording(let recording) = state, recording.folder == meeting else { return }
     logger.error(
-      "recording failed step=record error.type=\(problem.logName, privacy: .public) app.error.origin=system"
+      "recording failed step=record error.type=\(problem.logName, privacy: .public) app.error.origin=system folder.name=\(meeting.lastPathComponent, privacy: .public)"
     )
     ProcessInfo.processInfo.endActivity(recording.activity)
     state = .idle

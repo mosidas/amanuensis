@@ -30,6 +30,8 @@ private enum StartBehavior {
   case succeed, fail
   case succeedAfter(Duration)
   case waitForRelease
+  case interruptBeforeReturn
+  case stopFails
 }
 
 /// 一時ディレクトリの保存先、専用の UserDefaults の suite、偽の取り込み、報告の記録。
@@ -86,10 +88,15 @@ private enum StartBehavior {
     case .fail: throw RecordingProblem.captureFailed
     case .succeedAfter(let delay): try await Task.sleep(for: delay)
     case .waitForRelease: await withCheckedContinuation { release = $0 }
+    case .interruptBeforeReturn: onInterrupt(.interrupted)
+    case .stopFails: break
     }
+    let stopFails = if case .stopFails = behavior { true } else { false }
     return CaptureSession(stop: { [unowned self] in
       await countStop()
-      return try await writer.finish()
+      let duration = try await writer.finish()
+      if stopFails { throw RecordingProblem.saveFailed }
+      return duration
     })
   }
 
@@ -272,5 +279,60 @@ private func exists(_ url: URL) -> Bool {
     if case .recording = recorder.state {} else { Issue.record("録音中になる: \(recorder.state)") }
     await recorder.stop()
     #expect(harness.reports.isEmpty)
+  }
+
+  @Test func interruptionWhileStartingReturnsToIdleAndKeepsFile() async throws {
+    let harness = try Harness()
+    defer { harness.remove() }
+    harness.behavior = .interruptBeforeReturn
+    let recorder = try harness.recorder()
+
+    await recorder.start()
+    try await waitUntil { !harness.reports.isEmpty }
+
+    #expect(harness.reports == [.interrupted])
+    #expect(recorder.state == .idle, "止まった取り込みで録音中にならない")
+    #expect(try recordingAssertions().isEmpty)
+    let folders = try harness.meetingFolders()
+    #expect(folders.count == 1)
+    #expect(folders.allSatisfy { exists($0.appending(path: "recording.caf")) }, "途中までの音声を残す")
+  }
+
+  @Test func stopFailureReportsSaveFailedAndReturnsToIdle() async throws {
+    let harness = try Harness()
+    defer { harness.remove() }
+    harness.behavior = .stopFails
+    let recorder = try harness.recorder()
+    await recorder.start()
+
+    await recorder.stop()
+
+    #expect(harness.reports == [.saveFailed])
+    #expect(recorder.state == .idle)
+    #expect(try recordingAssertions().isEmpty)
+  }
+
+  @Test func discardFailureReportsDiscardFailedAndReturnsToIdle() async throws {
+    let harness = try Harness()
+    defer { harness.remove() }
+    let recorder = try harness.recorder()
+    await recorder.start()
+    guard case .recording(let recording) = recorder.state else {
+      Issue.record("録音中になる: \(recorder.state)")
+      return
+    }
+    let locked = recording.folder.appending(path: "locked", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+    try Data().write(to: locked.appending(path: "file"))
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+    }
+
+    await recorder.discard()
+
+    #expect(harness.reports == [.discardFailed])
+    #expect(recorder.state == .idle)
+    #expect(try recordingAssertions().isEmpty)
   }
 }
