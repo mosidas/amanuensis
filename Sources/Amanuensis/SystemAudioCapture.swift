@@ -46,9 +46,17 @@ func checkRecordingPermissions() async -> [Permission] {
   let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
   try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
   try stream.addStreamOutput(output, type: .microphone, sampleHandlerQueue: output.queue)
+  // 映像の出力が無いと ScreenCaptureKit が毎秒ログを出すため登録し、受け取った映像は捨てる。
+  try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: output.queue)
   try await stream.startCapture()
   return CaptureSession { @MainActor in
-    try await stream.stopCapture()
+    do {
+      try await stream.stopCapture()
+    } catch {
+      let code = (error as NSError).code
+      logger.error(
+        "capture stop failed error.type=\(code, privacy: .public) app.error.origin=system")
+    }
     return try await output.finish()
   }
 }
