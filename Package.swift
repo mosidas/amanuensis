@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "Amanuensis",
-  platforms: [.macOS(.v14)],
+  platforms: [.macOS(.v15)],
   targets: [
     .executableTarget(name: "Amanuensis"),
     .testTarget(name: "AmanuensisTests", dependencies: ["Amanuensis"]),
