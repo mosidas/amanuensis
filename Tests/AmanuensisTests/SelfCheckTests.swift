@@ -36,10 +36,10 @@ private let audio = URL(filePath: "/tmp/sample.wav")
     exit 0
     """)
   let log = temporaryLog()
-  let result = try await runSelfCheck(
+  let outcome = await runSelfCheck(
     executable: executable, model: model, audio: audio, reference: "今日は良い天気です。",
     timeout: .seconds(10), log: log)
-  #expect(result == SelfCheckResult(transcript: "今日はいい天気です", cer: 1.0 / 9))
+  #expect(outcome == .passed)
   let args = try String(contentsOf: directory.appending(path: "args"), encoding: .utf8)
   #expect(args == "asr\n/tmp/model dir/model.gguf\n--format\ntext\n/tmp/sample.wav\n")
   let line = try readLog(log)
@@ -49,22 +49,20 @@ private let audio = URL(filePath: "/tmp/sample.wav")
 @Test func selfCheckReportsExitStatus() async throws {
   let (executable, _) = try fakeSpeech("echo broken >&2; exit 3")
   let log = temporaryLog()
-  await #expect(throws: SelfCheckError.exited(status: 3)) {
-    try await runSelfCheck(
-      executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
-      log: log)
-  }
+  let outcome = await runSelfCheck(
+    executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
+    log: log)
+  #expect(outcome == .failed)
   let line = try readLog(log)
   #expect(line.contains(" selfcheck failed error.type=exited status=3 stderr=broken"))
 }
 
 @Test func selfCheckReportsLaunchFailure() async throws {
   let log = temporaryLog()
-  await #expect(throws: SelfCheckError.launchFailed) {
-    try await runSelfCheck(
-      executable: URL(filePath: "/nonexistent/speech"), model: model, audio: audio,
-      reference: "x", timeout: .seconds(10), log: log)
-  }
+  let outcome = await runSelfCheck(
+    executable: URL(filePath: "/nonexistent/speech"), model: model, audio: audio,
+    reference: "x", timeout: .seconds(10), log: log)
+  #expect(outcome == .failed)
   #expect(try readLog(log).contains(" selfcheck failed error.type=launch_failed"))
 }
 
@@ -73,11 +71,10 @@ private let audio = URL(filePath: "/tmp/sample.wav")
   let (executable, directory) = try fakeSpeech("while :; do :; done")
   let started = ContinuousClock.now
   let log = temporaryLog()
-  await #expect(throws: SelfCheckError.timedOut) {
-    try await runSelfCheck(
-      executable: executable, model: model, audio: audio, reference: "x",
-      timeout: .milliseconds(500), log: log)
-  }
+  let outcome = await runSelfCheck(
+    executable: executable, model: model, audio: audio, reference: "x",
+    timeout: .milliseconds(500), log: log)
+  #expect(outcome == .timedOut)
   #expect(try readLog(log).contains(" selfcheck failed error.type=timed_out"))
   #expect(ContinuousClock.now - started < .seconds(5), "タイムアウトで待たずに戻る")
   let pgrep = Process()
@@ -92,10 +89,10 @@ private let audio = URL(filePath: "/tmp/sample.wav")
 @Test func selfCheckLogsOverThreshold() async throws {
   let (executable, _) = try fakeSpeech("echo 'まったく違う'; exit 0")
   let log = temporaryLog()
-  let result = try await runSelfCheck(
+  let outcome = await runSelfCheck(
     executable: executable, model: model, audio: audio, reference: "今日は良い天気です。",
     timeout: .seconds(10), log: log)
-  #expect(result == SelfCheckResult(transcript: "まったく違う", cer: 1))
+  #expect(outcome == .failed, "終了コード 0 でも基準を超えたら失敗")
   let line = try readLog(log)
   #expect(
     line.contains(
@@ -106,21 +103,20 @@ private let audio = URL(filePath: "/tmp/sample.wav")
 @Test func selfCheckPassesAtThreshold() async throws {
   let (executable, _) = try fakeSpeech("echo 'XYZdefghijklmnopqrst'; exit 0")
   let log = temporaryLog()
-  let result = try await runSelfCheck(
+  let outcome = await runSelfCheck(
     executable: executable, model: model, audio: audio, reference: "abcdefghijklmnopqrst",
     timeout: .seconds(10), log: log)
-  #expect(result.cer == 0.15)
+  #expect(outcome == .passed, "CER がちょうど基準なら合格")
   #expect(try readLog(log).contains(" selfcheck passed cer=0.1500 threshold=0.15 "))
 }
 
 @Test func selfCheckLogMasksHomeAndKeepsOneLine() async throws {
   let (executable, _) = try fakeSpeech(#"printf '%s\n%s\n' "$HOME/x" second >&2; exit 1"#)
   let log = temporaryLog()
-  await #expect(throws: SelfCheckError.exited(status: 1)) {
-    try await runSelfCheck(
+  #expect(
+    await runSelfCheck(
       executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
-      log: log)
-  }
+      log: log) == .failed)
   let contents = try readLog(log)
   #expect(contents.split(separator: "\n").count == 1, "1 回の確認で 1 行")
   #expect(contents.contains(#"stderr=~/x\nsecond\n"#))
@@ -133,11 +129,10 @@ private let audio = URL(filePath: "/tmp/sample.wav")
   let padding = String(repeating: "x", count: 512 - (home.utf8.count - 3) - 1)
   let (executable, _) = try fakeSpeech("printf '%s%s\\n' '\(home)' '\(padding)' >&2; exit 1")
   let log = temporaryLog()
-  await #expect(throws: SelfCheckError.exited(status: 1)) {
-    try await runSelfCheck(
+  #expect(
+    await runSelfCheck(
       executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
-      log: log)
-  }
+      log: log) == .failed)
   let contents = try readLog(log)
   #expect(contents.contains("stderr=~\(padding)\\n"))
   #expect(!contents.contains((home as NSString).lastPathComponent), "利用者名を出さない")
@@ -147,7 +142,7 @@ private let audio = URL(filePath: "/tmp/sample.wav")
   let (executable, _) = try fakeSpeech("echo broken >&2; exit 3")
   let log = temporaryLog()
   for _ in 0..<2 {
-    _ = try? await runSelfCheck(
+    _ = await runSelfCheck(
       executable: executable, model: model, audio: audio, reference: "x", timeout: .seconds(10),
       log: log)
   }
@@ -164,11 +159,11 @@ private let audio = URL(filePath: "/tmp/sample.wav")
 func selfCheckOnBundledSample() async throws {
   let directory = bundledSampleDirectory
   let reference = try String(contentsOf: directory.appending(path: "sample.txt"), encoding: .utf8)
-  let result = try await runSelfCheck(
+  let outcome = await runSelfCheck(
     executable: SpeechInstallation.standard.executable,
     model: SpeechInstallation.standard.modelFile, audio: directory.appending(path: "sample.wav"),
     reference: reference, timeout: .seconds(120), log: temporaryLog())
-  #expect(result.cer <= selfCheckCERThreshold)
+  #expect(outcome == .passed)
 }
 
 private let bundledSampleDirectory = URL(filePath: #filePath)

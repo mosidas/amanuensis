@@ -32,6 +32,38 @@ private func sha256(_ data: Data) -> String {
   SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+/// 動作確認の代わり。呼ばれた回数を数え、`holds` のあいだは `release()` まで戻らない。
+@MainActor
+private final class StubCheck {
+  var outcome = SelfCheckOutcome.passed
+  var calls = 0
+  var holds = false
+  private var held: CheckedContinuation<Void, Never>?
+  var isHolding: Bool { held != nil }
+
+  func run(_: SpeechInstallation) async -> SelfCheckOutcome {
+    calls += 1
+    if holds { await withCheckedContinuation { held = $0 } }
+    return outcome
+  }
+
+  func release() {
+    holds = false
+    held?.resume()
+    held = nil
+  }
+}
+
+/// `condition` が真になるまで 10ms ごとに確かめる。5 秒で諦める。
+@MainActor
+private func waitUntil(_ condition: () -> Bool) async throws {
+  let deadline = ContinuousClock.now + .seconds(5)
+  while !condition() {
+    try #require(ContinuousClock.now < deadline, "5 秒以内に条件を満たす")
+    try await Task.sleep(for: .milliseconds(10))
+  }
+}
+
 @MainActor
 private struct Harness {
   let runtimeURL = LocalFileURLProtocol.makeURL()
@@ -60,8 +92,13 @@ private struct Harness {
     LocalFileURLProtocol.set(modelStub, for: modelURL)
   }
 
-  func makeSetup(available: Int64 = 1 << 40) -> SpeechSetup {
-    SpeechSetup(installation: installation, session: session, availableCapacity: { _ in available })
+  func makeSetup(
+    available: Int64 = 1 << 40,
+    selfCheck: @escaping (SpeechInstallation) async -> SelfCheckOutcome = { _ in .passed }
+  ) -> SpeechSetup {
+    SpeechSetup(
+      installation: installation, session: session, availableCapacity: { _ in available },
+      selfCheck: selfCheck)
   }
 
   func requestCount(_ url: URL) -> Int { LocalFileURLProtocol.receivedRanges(for: url).count }
@@ -72,13 +109,15 @@ private struct Harness {
 @MainActor
 @Test func installsRuntimeAndModel() async throws {
   let harness = Harness()
-  let setup = harness.makeSetup()
+  let stub = StubCheck()
+  let setup = harness.makeSetup(selfCheck: stub.run)
   #expect(setup.state == .notInstalled)
 
   await setup.download()
 
   let installation = harness.installation
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
+  #expect(stub.calls == 1, "ダウンロードの後に操作なしで動作確認する")
   #expect(installation.isInstalled)
   #expect(FileManager.default.isExecutableFile(atPath: installation.executable.path))
   #expect(getxattr(installation.executable.path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
@@ -118,7 +157,7 @@ private struct Harness {
 
   await setup.download()
 
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
   #expect(harness.requestCount(harness.runtimeURL) == 1)
   #expect(harness.requestCount(harness.modelURL) == 1)
 }
@@ -143,7 +182,7 @@ private struct Harness {
 
   let setup = harness.makeSetup()
   await setup.download()
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
   #expect(LocalFileURLProtocol.receivedRanges(for: harness.modelURL) == ["bytes=100000-"])
   #expect(try Data(contentsOf: installation.modelFile) == model)
 }
@@ -158,7 +197,7 @@ private struct Harness {
 
   LocalFileURLProtocol.set(.init(body: model), for: harness.modelURL)
   await setup.download()
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
   #expect(try Data(contentsOf: harness.installation.modelFile) == model)
 }
 
@@ -199,7 +238,7 @@ private struct Harness {
   async let second: Void = setup.download()
   _ = await (first, second)
 
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
   #expect(harness.requestCount(harness.runtimeURL) == 1)
   #expect(harness.requestCount(harness.modelURL) == 1)
 }
@@ -221,7 +260,7 @@ private struct Harness {
   let harness = Harness()
   let setup = harness.makeSetup()
   await setup.download()
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
 
   try FileManager.default.removeItem(at: harness.installation.modelFile)
   setup.refresh()
@@ -230,29 +269,126 @@ private struct Harness {
 }
 
 @MainActor
-@Test func clearsSelfCheckResultWhenDownloadStarts() async throws {
+@Test func downloadRunsRealSelfCheckAndFailsOnEmptyTranscript() async throws {
   let harness = Harness()
-  let setup = harness.makeSetup()
-  await setup.download()
-  await setup.runSelfCheck()
-  #expect(setup.selfCheck != .idle, "動作確認の結果が残っている")
+  // Harness のランタイムの `speech` は何も出さずに 0 で終わる。
+  let setup = harness.makeSetup { installation in
+    await runSelfCheck(
+      executable: installation.executable, model: installation.modelFile,
+      audio: URL(filePath: "/dev/null"), reference: "あ", timeout: .seconds(10),
+      log: installation.selfCheckLog)
+  }
 
-  try FileManager.default.removeItem(at: harness.installation.modelFile)
-  setup.refresh()
   await setup.download()
 
-  #expect(setup.state == .installed)
-  #expect(setup.selfCheck == .idle, "再ダウンロードの後に前回の動作確認の結果を出さない")
+  #expect(setup.state == .checked(.failed))
+  let log = try String(contentsOf: harness.installation.selfCheckLog, encoding: .utf8)
+  #expect(log.contains("selfcheck failed error.type=cer_over_threshold cer=1.0000"))
+}
+
+@MainActor
+@Test func reinstallRemovesRuntimeAndModelThenDownloadsAgain() async throws {
+  let harness = Harness()
+  let stub = StubCheck()
+  stub.outcome = .failed
+  let setup = harness.makeSetup(selfCheck: stub.run)
+  await setup.download()
+  #expect(setup.state == .checked(.failed))
+  try Data("broken".utf8).write(to: harness.installation.modelFile)
+
+  stub.outcome = .passed
+  await setup.reinstall()
+
+  #expect(setup.state == .checked(.passed))
+  #expect(harness.requestCount(harness.runtimeURL) == 2, "ランタイムを取り直す")
+  #expect(harness.requestCount(harness.modelURL) == 2, "モデルを取り直す")
+  #expect(try Data(contentsOf: harness.installation.modelFile) == model)
+  #expect(stub.calls == 2)
+}
+
+@MainActor
+@Test func reinstallStopsWithoutRequestsWhenRemovalFails() async throws {
+  let harness = Harness()
+  let stub = StubCheck()
+  stub.outcome = .failed
+  let setup = harness.makeSetup(selfCheck: stub.run)
+  await setup.download()
+  let directory = harness.installation.directory.path
+  try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory)
+  defer {
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory)
+  }
+
+  await setup.reinstall()
+
+  #expect(setup.state == .failed(.removal))
+  #expect(harness.requestCount(harness.runtimeURL) == 1, "消せなければ取り直さない")
+  #expect(harness.requestCount(harness.modelURL) == 1, "消せなければ取り直さない")
+  #expect(stub.calls == 1)
+}
+
+@MainActor
+@Test func checkRetriesOnlySelfCheck() async {
+  let harness = Harness()
+  let stub = StubCheck()
+  stub.outcome = .timedOut
+  let setup = harness.makeSetup(selfCheck: stub.run)
+  await setup.download()
+  #expect(setup.state == .checked(.timedOut))
+
+  stub.outcome = .passed
+  await setup.check()
+
+  #expect(setup.state == .checked(.passed))
+  #expect(stub.calls == 2)
+  #expect(harness.requestCount(harness.runtimeURL) == 1, "動作確認だけをやり直す")
+  #expect(harness.requestCount(harness.modelURL) == 1, "動作確認だけをやり直す")
+}
+
+@MainActor
+@Test func startsSelfCheckWhenInstalledAtLaunch() async throws {
+  let harness = Harness()
+  await harness.makeSetup().download()
+  let stub = StubCheck()
+
+  let setup = harness.makeSetup(selfCheck: stub.run)
+
+  #expect(setup.state == .checking, "起動後に取得済みなら確認中から始める")
+  try await waitUntil { setup.state == .checked(.passed) }
+  #expect(stub.calls == 1)
+}
+
+@MainActor
+@Test func ignoresDownloadWhileChecking() async throws {
+  let harness = Harness()
+  let stub = StubCheck()
+  stub.holds = true
+  let setup = harness.makeSetup(selfCheck: stub.run)
+  let first = Task { await setup.download() }
+  try await waitUntil { stub.isHolding }
+  #expect(setup.state == .checking)
+
+  await setup.download()
+  await setup.check()
+  await setup.reinstall()
+  #expect(setup.state == .checking, "確認中の操作は何もしない")
+
+  stub.release()
+  await first.value
+  #expect(setup.state == .checked(.passed))
+  #expect(stub.calls == 1, "2 回押しても動作確認は 1 回")
+  #expect(harness.requestCount(harness.runtimeURL) == 1)
+  #expect(harness.requestCount(harness.modelURL) == 1)
 }
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_E2E"] == "1"))
 func realDownloadInstallsRuntimeAndModel() async {
-  let setup = SpeechSetup()
+  let setup = SpeechSetup(selfCheck: { _ in .passed })
   await setup.download()
 
   let installation = SpeechInstallation.standard
-  #expect(setup.state == .installed)
+  #expect(setup.state == .checked(.passed))
   #expect(installation.isInstalled)
   #expect(FileManager.default.isExecutableFile(atPath: installation.executable.path))
   #expect(getxattr(installation.executable.path, "com.apple.quarantine", nil, 0, 0, 0) == -1)

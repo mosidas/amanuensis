@@ -35,11 +35,16 @@ private struct SettingsView: View {
         RecordingSettingsView(folder: RecordingFolder())
       }
       Section("音声認識") {
-        SpeechSettingsView(
-          state: speechSetup.state, selfCheck: speechSetup.selfCheck,
-          folder: speechSetup.installation.directory,
-          onDownload: { Task { await speechSetup.download() } },
-          onSelfCheck: { Task { await speechSetup.runSelfCheck() } })
+        SpeechSettingsView(state: speechSetup.state, installation: speechSetup.installation) {
+          action in
+          Task {
+            switch action {
+            case .download: await speechSetup.download()
+            case .reinstall: await speechSetup.reinstall()
+            case .check: await speechSetup.check()
+            }
+          }
+        }
       }
     }
     .formStyle(.grouped)
