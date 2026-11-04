@@ -104,19 +104,44 @@ func settingsTextMatchesTable(name: String) throws {
         }
       }
       .formStyle(.grouped)
-      let hosting = NSHostingView(rootView: content)
-      let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 520, height: 240), styleMask: [.titled],
-        backing: .buffered, defer: false)
-      window.appearance = NSAppearance(named: appearance)
-      window.contentView = hosting
-      hosting.layoutSubtreeIfNeeded()
-      RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-      let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
-      hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
-      let png = try #require(bitmap.representation(using: .png, properties: [:]))
-      try png.write(to: directory.appending(path: "\(row.name)-\(suffix).png"))
-      window.close()
+      try writeSnapshot(
+        content, height: 240, appearance: appearance,
+        to: directory.appending(path: "\(row.name)-\(suffix).png"))
     }
   }
+  let suiteName = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
+  defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+  let recordingFolder = RecordingFolder(defaults: try #require(UserDefaults(suiteName: suiteName)))
+  for (name, root) in [
+    ("recording-default", nil), ("recording-custom", URL(filePath: "/Volumes/会議の録音/amanuensis")),
+  ] {
+    if let root { recordingFolder.setRoot(root) }
+    for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+      let content = Form {
+        Section("録音") { RecordingSettingsView(folder: recordingFolder) }
+      }
+      .formStyle(.grouped)
+      try writeSnapshot(
+        content, height: 120, appearance: appearance,
+        to: directory.appending(path: "\(name)-\(suffix).png"))
+    }
+  }
+}
+
+@MainActor private func writeSnapshot(
+  _ content: some View, height: CGFloat, appearance: NSAppearance.Name, to url: URL
+) throws {
+  let hosting = NSHostingView(rootView: content)
+  let window = NSWindow(
+    contentRect: NSRect(x: 0, y: 0, width: 520, height: height), styleMask: [.titled],
+    backing: .buffered, defer: false)
+  window.appearance = NSAppearance(named: appearance)
+  window.contentView = hosting
+  hosting.layoutSubtreeIfNeeded()
+  RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+  let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+  hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+  let png = try #require(bitmap.representation(using: .png, properties: [:]))
+  try png.write(to: url)
+  window.close()
 }
