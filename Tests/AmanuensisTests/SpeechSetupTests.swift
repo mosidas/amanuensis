@@ -42,6 +42,10 @@ private final class StubCheck {
   var isHolding: Bool { held != nil }
 
   func run(_: SpeechInstallation) async -> SelfCheckOutcome {
+    if holds && held != nil {
+      Issue.record("確認中に動作確認がもう一度呼ばれた")
+      return outcome
+    }
     calls += 1
     if holds { await withCheckedContinuation { held = $0 } }
     return outcome

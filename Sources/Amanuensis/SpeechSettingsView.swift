@@ -1,4 +1,8 @@
+import AppKit
 import SwiftUI
+import os
+
+private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "selfcheck")
 
 /// 設定画面の「音声認識」に出す見出し・本文・塗りのボタン。
 struct SpeechSettingsDisplay: Equatable {
@@ -19,6 +23,10 @@ enum SpeechAction {
 }
 
 enum SpeechSettingsText {
+  /// 「ログを表示」で selfcheck.log を開けなかったときの表示。
+  static let logOpenFailed = SpeechSettingsDisplay(
+    title: "ログを開けませんでした", body: "フォルダーのアクセス権を確かめてください。", isFailure: true, primary: nil)
+
   /// `state` のときに出す表示。`folder` はランタイムとモデルの保存先。
   static func display(for state: SetupState, folder: URL) -> SpeechSettingsDisplay {
     let retryDownload = SpeechButton(label: "再試行", action: .download)
@@ -46,7 +54,8 @@ enum SpeechSettingsText {
     case .checked(.failed):
       .init(
         title: "音声認識が正しく動いていません", body: "ランタイムとモデルを削除して、ダウンロードし直してください。",
-        isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall))
+        isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall),
+        showsLog: true)
     case .checked(.timedOut):
       .init(
         title: "音声認識の動作確認が時間内に終わりませんでした", body: "ほかのアプリを終了してから再試行してください。",
@@ -102,6 +111,7 @@ struct SpeechSettingsView: View {
   let state: SetupState
   let installation: SpeechInstallation
   let perform: (SpeechAction) -> Void
+  @State private var logOpenFailed = false
 
   var body: some View {
     let display = SpeechSettingsText.display(for: state, folder: installation.directory)
@@ -111,14 +121,28 @@ struct SpeechSettingsView: View {
         ProgressView(value: Double(received), total: Double(max(total, 1)))
           .accessibilityLabel(display.title)
       }
+      if display.showsLog && logOpenFailed {
+        let failure = SpeechSettingsText.logOpenFailed
+        Message(title: failure.title, detail: failure.body, isFailure: failure.isFailure)
+      }
       if let primary = display.primary {
         HStack {
           Spacer()
+          if display.showsLog {
+            Button("ログを表示", action: openLog)
+          }
           Button(primary.label) { perform(primary.action) }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
         }
       }
+    }
+  }
+
+  private func openLog() {
+    logOpenFailed = !NSWorkspace.shared.open(installation.selfCheckLog)
+    if logOpenFailed {
+      logger.error("open log failed error.type=open_failed app.error.origin=system")
     }
   }
 }

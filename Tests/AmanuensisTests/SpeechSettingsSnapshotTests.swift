@@ -43,7 +43,8 @@ private let rows = [
     name: "checked-failed", state: .checked(.failed),
     display: .init(
       title: "音声認識が正しく動いていません", body: "ランタイムとモデルを削除して、ダウンロードし直してください。",
-      isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall))),
+      isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall),
+      showsLog: true)),
   Row(
     name: "checked-timed-out", state: .checked(.timedOut),
     display: .init(
@@ -97,6 +98,14 @@ private let rows = [
 func settingsTextMatchesTable(name: String) throws {
   let row = try #require(rows.first { $0.name == name })
   #expect(SpeechSettingsText.display(for: row.state, folder: folder) == row.display)
+}
+
+@Test func logOpenFailedMatchesTable() {
+  #expect(
+    SpeechSettingsText.logOpenFailed
+      == .init(
+        title: "ログを開けませんでした", body: "フォルダーのアクセス権を確かめてください。", isFailure: true,
+        primary: nil))
 }
 
 @Test func noRemovedButtons() {
