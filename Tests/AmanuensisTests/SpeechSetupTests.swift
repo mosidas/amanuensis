@@ -205,6 +205,18 @@ private struct Harness {
 }
 
 @MainActor
+@Test func keepsFailureWhenRefreshedAfterFailedDownload() async {
+  let harness = Harness(modelStub: .init(body: model, failImmediately: true))
+  let setup = harness.makeSetup()
+  await setup.download()
+  #expect(setup.state == .failed(.network))
+
+  setup.refresh()
+
+  #expect(setup.state == .failed(.network), "設定を開き直しても失敗の表示が残る")
+}
+
+@MainActor
 @Test func reportsNotInstalledAfterUserDeletesModel() async throws {
   let harness = Harness()
   let setup = harness.makeSetup()

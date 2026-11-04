@@ -62,11 +62,12 @@ extension URLSession {
     refresh()
   }
 
-  /// ディスクの中身から状態を導き直す。取得の途中なら変えない。
+  /// 未取得か取得済みのときだけディスクの中身から状態を導き直す。取得の途中と失敗の表示は変えない。
   func refresh() {
     switch state {
-    case .downloading, .verifying: return
-    default: state = installation.isInstalled ? .installed : .notInstalled
+    case .notInstalled, .installed:
+      state = installation.isInstalled ? .installed : .notInstalled
+    case .downloading, .verifying, .insufficientSpace, .failed: return
     }
   }
 
@@ -87,8 +88,16 @@ extension URLSession {
     do {
       try FileManager.default.createDirectory(
         at: installation.directory, withIntermediateDirectories: true)
+    } catch {
+      logger.error(
+        "setup failed step=create_directory error.type=file_system app.error.origin=system")
+      state = .failed(.fileSystem)
+      return
+    }
+    do {
       available = try availableCapacity(installation.directory)
     } catch {
+      logger.error("setup failed step=capacity error.type=file_system app.error.origin=system")
       state = .failed(.fileSystem)
       return
     }
@@ -188,6 +197,8 @@ extension URLSession {
       try fileManager.moveItem(at: temporary, to: installation.runtimeDirectory)
       try fileManager.removeItem(at: zip)
     } catch {
+      logger.error(
+        "setup failed step=install_runtime error.type=file_system app.error.origin=system")
       throw .fileSystem
     }
   }
@@ -232,3 +243,6 @@ private func volumeAvailableCapacity(_ directory: URL) throws -> Int64 {
   else { throw CocoaError(.fileReadUnknown) }
   return capacity
 }
+
+// main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
+@MainActor let speechSetup = SpeechSetup()

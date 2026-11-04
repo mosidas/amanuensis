@@ -18,7 +18,8 @@ func showSettings() {
       settingsWindow = window
       return window
     }()
-  // 開くたびにビューを作り直し、保存値を読み直す。
+  // 開くたびにビューを作り直し、保存値とディスクの中身を読み直す。
+  speechSetup.refresh()
   let hosting = NSHostingView(rootView: SettingsView())
   hosting.sizingOptions = [.minSize]
   window.contentView = hosting
@@ -30,7 +31,11 @@ func showSettings() {
 private struct SettingsView: View {
   var body: some View {
     Form {
-      Section("音声認識") {}
+      Section("音声認識") {
+        SpeechSettingsView(
+          state: speechSetup.state, folder: speechSetup.installation.directory,
+          onDownload: { Task { await speechSetup.download() } })
+      }
     }
     .formStyle(.grouped)
   }
