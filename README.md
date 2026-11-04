@@ -11,11 +11,11 @@ A macOS menu bar app that detects web meetings, records them, and transcribes Ja
 amanuensis asks for these permissions:
 
 - Microphone
-- Screen & System Audio Recording: used for the system audio of meeting apps. The app does not save video.
+- System Audio Recording: used for the system audio of meeting apps (System Settings > Privacy & Security > Screen & System Audio Recording > System Audio Recording Only).
 - Documents folder: the default save location.
 - Notifications
 
-The app is ad-hoc signed, so macOS may ask for the permissions again after an update. After granting Screen & System Audio Recording, relaunch the app.
+The app is ad-hoc signed, so macOS may ask for the permissions again after an update. If you turn on System Audio Recording in System Settings, relaunch the app.
 
 ## Recording
 
