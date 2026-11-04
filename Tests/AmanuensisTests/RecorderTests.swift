@@ -96,8 +96,7 @@ private enum StartBehavior {
   private func countStop() { stopCalls += 1 }
 }
 
-/// `pmset -g assertions` のうち、このプロセスが出したスリープ抑止の行。
-/// pmset は ASCII でない理由(「amanuensis が録音しています」)を `named: ""` と表示するため、理由では絞らない。
+/// `pmset -g assertions` のうち、このプロセスが録音のために出したスリープ抑止の行。
 private func recordingAssertions() throws -> [String] {
   let process = Process()
   process.executableURL = URL(filePath: "/usr/bin/pmset")
@@ -108,7 +107,7 @@ private func recordingAssertions() throws -> [String] {
   let data = output.fileHandleForReading.readDataToEndOfFile()
   process.waitUntilExit()
   return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter {
-    $0.contains("pid \(getpid())(") && $0.contains("PreventUserIdleSystemSleep")
+    $0.contains("pid \(getpid())(") && $0.contains("amanuensis is recording")
   }
 }
 
