@@ -255,5 +255,8 @@ extension RecordingProblem {
 // main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
 @MainActor let recorder = Recorder(
   folder: RecordingFolder(), missingPermissions: checkRecordingPermissions,
-  startCapture: startSystemAudioCapture,
+  startCapture: { file, onInterrupt in
+    try await startSystemAudioCapture(
+      file: file, microphone: MicrophoneSetting().choice, onInterrupt: onInterrupt)
+  },
   report: MenuBar.present)
