@@ -41,15 +41,19 @@ final class MenuBar: NSObject {
     return image
   }
 
-  /// 失敗を利用者に伝える。権限の不足は警告で、それ以外は通知で伝える。
+  /// 失敗を利用者に伝える。権限の不足と開始の失敗は警告で、それ以外は通知で伝える。
   static func present(_ problem: RecordingProblem) {
-    if case .missingPermissions(let missing) = problem,
-      let action = RecordingText.action(for: problem)
-    {
-      if alert(problem, buttons: [action, "閉じる"]) == .alertFirstButtonReturn,
-        let first = missing.first
+    if RecordingText.alerts(for: problem) {
+      if case .missingPermissions(let missing) = problem,
+        let action = RecordingText.action(for: problem)
       {
-        NSWorkspace.shared.open(first.settingsURL)
+        if alert(problem, buttons: [action, "閉じる"]) == .alertFirstButtonReturn,
+          let first = missing.first
+        {
+          NSWorkspace.shared.open(first.settingsURL)
+        }
+      } else {
+        alert(problem, buttons: ["閉じる"])
       }
       return
     }

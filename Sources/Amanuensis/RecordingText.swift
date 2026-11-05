@@ -52,6 +52,14 @@ enum RecordingText {
   static func action(for problem: RecordingProblem) -> String? {
     if case .missingPermissions = problem { "システム設定を開く" } else { nil }
   }
+
+  /// 警告で伝えるなら true、通知で伝えるなら false。権限の不足と開始の失敗は警告で伝える。
+  static func alerts(for problem: RecordingProblem) -> Bool {
+    switch problem {
+    case .missingPermissions, .folderMissing, .folderNotWritable, .captureFailed: true
+    case .interrupted, .writeFailed, .saveFailed, .discardFailed: false
+    }
+  }
 }
 
 extension Permission {

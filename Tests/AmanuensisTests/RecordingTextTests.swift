@@ -98,6 +98,15 @@ func problemTextMatchesTable(name: String) throws {
   #expect(RecordingText.action(for: row.problem) == row.action)
 }
 
+/// 録音中と終了時の失敗だけが通知で、権限の不足と開始の失敗は警告で伝わる。
+private let notifiedRows: Set = ["interrupted", "write-failed", "save-failed", "discard-failed"]
+
+@Test(arguments: problemRows.map(\.name))
+func startFailuresAlertOthersNotify(name: String) throws {
+  let row = try #require(problemRows.first { $0.name == name })
+  #expect(RecordingText.alerts(for: row.problem) == !notifiedRows.contains(name), "\(name)")
+}
+
 @Test(arguments: [
   ("start_device", "-10851"), ("find_microphone", "-50"), ("create_ioproc", "no_ioproc"),
   ("x", "y"),
