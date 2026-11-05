@@ -15,6 +15,7 @@ struct SpeechInstallation: Sendable {
   var runtimeDirectory: URL { directory.appending(path: "runtime") }
   var executable: URL { runtimeDirectory.appending(path: "speech") }
   var modelFile: URL { directory.appending(path: model.fileName) }
+  var selfCheckLog: URL { directory.appending(path: "selfcheck.log") }
   var isInstalled: Bool { exists(executable) && exists(modelFile) }
 
   static let standard = SpeechInstallation(
@@ -25,13 +26,14 @@ enum SetupState: Equatable {
   case notInstalled
   case downloading(receivedBytes: Int64, totalBytes: Int64)
   case verifying
-  case installed
+  case checking
+  case checked(SelfCheckOutcome)
   case insufficientSpace(required: Int64, available: Int64)
   case failed(SetupFailure)
 }
 
 enum SetupFailure: Error, Equatable {
-  case network, server, checksumMismatch, fileSystem, extraction
+  case network, server, checksumMismatch, fileSystem, extraction, removal
 }
 
 extension URLSession {
@@ -45,40 +47,44 @@ extension URLSession {
   }()
 }
 
-/// ランタイムとモデルの取得の状態を持つ。状態の持ち主はこの型だけである。
+/// ランタイムとモデルの取得と動作確認の状態を持つ。状態の持ち主はこの型だけである。
 @MainActor @Observable final class SpeechSetup {
   private(set) var state = SetupState.notInstalled
-  private(set) var selfCheck = SelfCheckState.idle
   let installation: SpeechInstallation
   private let session: URLSession
   private let availableCapacity: (URL) throws -> Int64
+  private let selfCheck: (SpeechInstallation) async -> SelfCheckOutcome
 
   init(
     installation: SpeechInstallation = .standard, session: URLSession = .speechDownloads,
-    availableCapacity: @escaping (URL) throws -> Int64 = volumeAvailableCapacity
+    availableCapacity: @escaping (URL) throws -> Int64 = volumeAvailableCapacity,
+    selfCheck: @escaping (SpeechInstallation) async -> SelfCheckOutcome = runBundledSelfCheck
   ) {
     self.installation = installation
     self.session = session
     self.availableCapacity = availableCapacity
+    self.selfCheck = selfCheck
     refresh()
   }
 
-  /// 未取得か取得済みのときだけディスクの中身から状態を導き直す。取得の途中と失敗の表示は変えない。
+  /// 未取得か確認済みのときだけディスクの中身から状態を導き直す。取得と確認の途中と失敗の表示は変えない。
+  /// 未取得からファイルが揃っていたら(起動後に初めて開いたとき)動作確認を始める。
   func refresh() {
     switch state {
-    case .notInstalled, .installed:
-      state = installation.isInstalled ? .installed : .notInstalled
-    case .downloading, .verifying, .insufficientSpace, .failed: return
+    case .notInstalled, .checked:
+      if !installation.isInstalled {
+        state = .notInstalled
+      } else if state == .notInstalled {
+        state = .checking
+        Task { await runCheck() }
+      }
+    case .downloading, .verifying, .checking, .insufficientSpace, .failed: return
     }
   }
 
-  /// 足りないファイルを取得して展開する。取得の途中に呼ばれたら何もしない。
+  /// 足りないファイルを取得して展開し、動作確認する。取得と確認の途中に呼ばれたら何もしない。
   func download() async {
-    switch state {
-    case .downloading, .verifying: return
-    default: break
-    }
-    selfCheck = .idle
+    guard !isBusy else { return }
     let needsRuntime = !exists(installation.executable)
     let needsModel = !exists(installation.modelFile)
     let pending = [
@@ -134,14 +140,43 @@ extension URLSession {
       return
     }
     logger.info("setup installed")
-    state = .installed
+    await runCheck()
   }
 
-  /// 同梱の音声で動作確認する。動作確認の途中に呼ばれたら何もしない。
-  func runSelfCheck() async {
-    guard selfCheck != .running else { return }
-    selfCheck = .running
-    selfCheck = await runBundledSelfCheck(installation)
+  /// 動作確認だけをやり直す。取得と確認の途中に呼ばれたら何もしない。
+  func check() async {
+    guard !isBusy else { return }
+    await runCheck()
+  }
+
+  /// ランタイムとモデルを消してから取得し直す。取得と確認の途中に呼ばれたら何もしない。
+  /// 消せなければ要求を送らずに止める。
+  func reinstall() async {
+    guard !isBusy else { return }
+    logger.info("setup reinstall started")
+    do {
+      for url in [installation.runtimeDirectory, installation.modelFile] where exists(url) {
+        try FileManager.default.removeItem(at: url)
+      }
+    } catch {
+      logger.error("setup failed step=remove error.type=file_system app.error.origin=system")
+      state = .failed(.removal)
+      return
+    }
+    await download()
+  }
+
+  private var isBusy: Bool {
+    switch state {
+    case .downloading, .verifying, .checking: true
+    case .notInstalled, .checked, .insufficientSpace, .failed: false
+    }
+  }
+
+  private func runCheck() async {
+    state = .checking
+    logger.info("selfcheck started")
+    state = .checked(await selfCheck(installation))
   }
 
   private func destination(of file: RemoteFile) -> URL {

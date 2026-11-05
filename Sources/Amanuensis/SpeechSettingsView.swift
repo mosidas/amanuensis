@@ -2,74 +2,98 @@ import AppKit
 import SwiftUI
 import os
 
-private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "settings")
+private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "selfcheck")
 
-/// 設定画面の「音声認識」に出す文言。取得の状態と動作確認の状態から一意に決まる。
-/// 取得済みで動作確認を始めた後は、動作確認の状態を出す。
+/// 設定画面の「音声認識」に出す見出し・本文・塗りのボタン。
+struct SpeechSettingsDisplay: Equatable {
+  let title: String
+  let body: String?
+  let isFailure: Bool
+  let primary: SpeechButton?
+  var showsLog = false
+}
+
+struct SpeechButton: Equatable {
+  let label: String
+  let action: SpeechAction
+}
+
+enum SpeechAction {
+  case download, reinstall, check
+}
+
 enum SpeechSettingsText {
-  static func title(for state: SetupState, selfCheck: SelfCheckState) -> String {
-    if state == .installed, let title = title(for: selfCheck) { return title }
-    return switch state {
-    case .notInstalled: "音声認識モデルは未取得です"
-    case .downloading: "ダウンロードしています…"
-    case .verifying: "ダウンロードしたファイルを確認しています…"
-    case .installed: "音声認識モデルは取得済みです"
-    case .insufficientSpace: "空き容量が足りません"
-    case .failed(.network), .failed(.server): "ダウンロードできませんでした"
-    case .failed(.checksumMismatch): "ダウンロードしたファイルが壊れていました"
-    case .failed(.fileSystem): "ファイルを保存できませんでした"
-    case .failed(.extraction): "音声認識の準備ができませんでした"
-    }
-  }
+  /// 「ログを表示」で selfcheck.log を開けなかったときの表示。
+  static let logOpenFailed = SpeechSettingsDisplay(
+    title: "ログを開けませんでした", body: "フォルダーのアクセス権を確かめてください。", isFailure: true, primary: nil)
 
-  static func body(for state: SetupState, selfCheck: SelfCheckState) -> String? {
-    if state == .installed, selfCheck != .idle { return body(for: selfCheck) }
+  /// `state` のときに出す表示。`folder` はランタイムとモデルの保存先。
+  static func display(for state: SetupState, folder: URL) -> SpeechSettingsDisplay {
+    let retryDownload = SpeechButton(label: "再試行", action: .download)
     return switch state {
     case .notInstalled:
-      "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount)) です。"
+      .init(
+        title: "音声認識モデルは未取得です",
+        body:
+          "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount)) です。",
+        isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
     case .downloading(let received, let total):
-      "\(received * 100 / max(total, 1))%(\(bytes(received)) / \(bytes(total)))"
-    case .verifying, .installed: nil
+      .init(
+        title: "ダウンロードしています…",
+        body: "\(received * 100 / max(total, 1))%(\(bytes(received)) / \(bytes(total)))",
+        isFailure: false, primary: nil)
+    case .verifying:
+      .init(title: "ダウンロードしたファイルを確認しています…", body: nil, isFailure: false, primary: nil)
+    case .checking:
+      .init(title: "音声認識の動作を確認しています…", body: nil, isFailure: false, primary: nil)
+    case .checked(.passed):
+      .init(
+        title: "音声認識の準備ができました",
+        body: "\((folder.path as NSString).abbreviatingWithTildeInPath) に保存しています。",
+        isFailure: false, primary: nil)
+    case .checked(.failed):
+      .init(
+        title: "音声認識が正しく動いていません", body: "ランタイムとモデルを削除して、ダウンロードし直してください。",
+        isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall),
+        showsLog: true)
+    case .checked(.timedOut):
+      .init(
+        title: "音声認識の動作確認が時間内に終わりませんでした", body: "ほかのアプリを終了してから再試行してください。",
+        isFailure: true, primary: SpeechButton(label: "再試行", action: .check))
+    case .checked(.unavailable):
+      .init(
+        title: "動作確認用の音声がありません", body: "このビルドには動作確認用の音声が入っていません。", isFailure: false,
+        primary: nil)
     case .insufficientSpace(let required, let available):
-      "ダウンロードには \(bytes(required)) の空きが必要です(今の空きは \(bytes(available)) です)。不要なファイルを削除してから、もう一度お試しください。"
-    case .failed(.network): "ネットワークの接続を確かめてから、もう一度お試しください。"
-    case .failed(.server): "時間をおいて、もう一度お試しください。"
-    case .failed(.checksumMismatch), .failed(.extraction): "もう一度お試しください。"
-    case .failed(.fileSystem): "空き容量とフォルダーのアクセス権を確かめてから、もう一度お試しください。"
-    }
-  }
-
-  /// 塗りのボタンの名前。押せる操作が無い状態では nil。
-  static func primaryAction(for state: SetupState, selfCheck: SelfCheckState) -> String? {
-    switch (state, selfCheck) {
-    case (.notInstalled, _): "ダウンロード"
-    case (.insufficientSpace, _), (.failed, _): "再試行"
-    case (.installed, .running), (.installed, .unavailable): nil
-    case (.installed, _): "動作確認"
-    case (.downloading, _), (.verifying, _): nil
-    }
-  }
-
-  private static func title(for selfCheck: SelfCheckState) -> String? {
-    switch selfCheck {
-    case .idle: nil
-    case .running: "文字起こししています…"
-    case .finished: "動作確認の結果"
-    case .unavailable: "動作確認用の音声がありません"
-    case .failed(.launchFailed), .failed(.exited): "文字起こしに失敗しました"
-    case .failed(.timedOut): "文字起こしが時間内に終わりませんでした"
-    }
-  }
-
-  private static func body(for selfCheck: SelfCheckState) -> String? {
-    switch selfCheck {
-    case .idle, .running: nil
-    case .finished(let result):
-      "\(result.transcript)\n文字誤り率(CER)は \(String(format: "%.1f", result.cer * 100))% で、"
-        + (result.cer <= selfCheckCERThreshold ? "基準の 15% 以下です。" : "基準の 15% を超えています。")
-    case .unavailable: "このビルドには動作確認用の音声が入っていません。"
-    case .failed(.launchFailed), .failed(.exited): "もう一度お試しください。"
-    case .failed(.timedOut): "ほかのアプリを終了してから、もう一度お試しください。"
+      .init(
+        title: "空き容量が足りません",
+        body:
+          "ダウンロードには \(bytes(required)) の空きが必要です(今の空きは \(bytes(available)) です)。不要なファイルを削除してから、もう一度お試しください。",
+        isFailure: true, primary: retryDownload)
+    case .failed(.network):
+      .init(
+        title: "ダウンロードできませんでした", body: "ネットワークの接続を確かめてから、もう一度お試しください。", isFailure: true,
+        primary: retryDownload)
+    case .failed(.server):
+      .init(
+        title: "ダウンロードできませんでした", body: "時間をおいて、もう一度お試しください。", isFailure: true,
+        primary: retryDownload)
+    case .failed(.checksumMismatch):
+      .init(
+        title: "ダウンロードしたファイルが壊れていました", body: "もう一度お試しください。", isFailure: true,
+        primary: retryDownload)
+    case .failed(.fileSystem):
+      .init(
+        title: "ファイルを保存できませんでした", body: "空き容量とフォルダーのアクセス権を確かめてから、もう一度お試しください。",
+        isFailure: true, primary: retryDownload)
+    case .failed(.extraction):
+      .init(
+        title: "音声認識の準備ができませんでした", body: "もう一度お試しください。", isFailure: true,
+        primary: retryDownload)
+    case .failed(.removal):
+      .init(
+        title: "古いファイルを削除できませんでした", body: "フォルダーのアクセス権を確かめてから、もう一度お試しください。",
+        isFailure: true, primary: SpeechButton(label: "再試行", action: .reinstall))
     }
   }
 
@@ -82,56 +106,44 @@ enum SpeechSettingsText {
   }
 }
 
-/// 音声認識のランタイムとモデルの取得の状態と操作。
+/// 音声認識の準備の状態と、その状態で取れる 1 つの操作。
 struct SpeechSettingsView: View {
   let state: SetupState
-  let selfCheck: SelfCheckState
-  let folder: URL
-  let onDownload: () -> Void
-  let onSelfCheck: () -> Void
-  @State private var folderOpenFailed = false
+  let installation: SpeechInstallation
+  let perform: (SpeechAction) -> Void
+  @State private var logOpenFailed = false
 
   var body: some View {
-    let isFailure =
-      switch state {
-      case .insufficientSpace, .failed: true
-      case .installed: if case .failed = selfCheck { true } else { false }
-      default: false
-      }
+    let display = SpeechSettingsText.display(for: state, folder: installation.directory)
     VStack(alignment: .leading, spacing: 8) {
-      Message(
-        title: SpeechSettingsText.title(for: state, selfCheck: selfCheck),
-        detail: SpeechSettingsText.body(for: state, selfCheck: selfCheck),
-        isFailure: isFailure)
+      Message(title: display.title, detail: display.body, isFailure: display.isFailure)
       if case .downloading(let received, let total) = state {
         ProgressView(value: Double(received), total: Double(max(total, 1)))
-          .accessibilityLabel(SpeechSettingsText.title(for: state, selfCheck: selfCheck))
+          .accessibilityLabel(display.title)
       }
-      HStack {
-        if folderOpenFailed {
-          Message(
-            title: "フォルダーを開けませんでした", detail: "フォルダーのアクセス権を確かめてください。", isFailure: true)
-        }
-        Spacer()
-        Button("Finder で開く", action: openFolder)
-        if let action = SpeechSettingsText.primaryAction(for: state, selfCheck: selfCheck) {
-          Button(action, action: state == .installed ? onSelfCheck : onDownload)
+      if display.showsLog && logOpenFailed {
+        let failure = SpeechSettingsText.logOpenFailed
+        Message(title: failure.title, detail: failure.body, isFailure: failure.isFailure)
+      }
+      if let primary = display.primary {
+        HStack {
+          Spacer()
+          if display.showsLog {
+            Button("ログを表示", action: openLog)
+          }
+          Button(primary.label) { perform(primary.action) }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
         }
       }
     }
+    .onChange(of: state) { logOpenFailed = false }
   }
 
-  private func openFolder() {
-    do {
-      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-      guard NSWorkspace.shared.open(folder) else { throw CocoaError(.fileReadUnknown) }
-      folderOpenFailed = false
-    } catch {
-      logger.error(
-        "open folder failed error.type=\(String(describing: type(of: error)), privacy: .public)")
-      folderOpenFailed = true
+  private func openLog() {
+    logOpenFailed = !NSWorkspace.shared.open(installation.selfCheckLog)
+    if logOpenFailed {
+      logger.error("open log failed error.type=open_failed app.error.origin=system")
     }
   }
 }

@@ -4,87 +4,115 @@ import Testing
 
 @testable import Amanuensis
 
-/// 文言の表の 1 行。`state` と `selfCheck` の見出し・本文・塗りのボタンの名前。
+/// 文言の表の 1 行。`state` のときに出す見出し・本文・塗りのボタン。
 private struct Row {
   let name: String
   let state: SetupState
-  var selfCheck = SelfCheckState.idle
-  let title: String
-  let body: String?
-  let primaryAction: String?
+  let display: SpeechSettingsDisplay
 }
+
+private let folder = FileManager.default.homeDirectoryForCurrentUser.appending(
+  path: "Library/Application Support/amanuensis")
+private let download = SpeechButton(label: "ダウンロード", action: .download)
+private let retryDownload = SpeechButton(label: "再試行", action: .download)
 
 // 662_469_229 はランタイムとモデルの合計。245_200_000 はその 37.01%。
 private let rows = [
   Row(
-    name: "not-installed", state: .notInstalled, title: "音声認識モデルは未取得です",
-    body: "ダウンロードの容量は 662 MB です。", primaryAction: "ダウンロード"),
+    name: "not-installed", state: .notInstalled,
+    display: .init(
+      title: "音声認識モデルは未取得です", body: "ダウンロードの容量は 662 MB です。", isFailure: false,
+      primary: download)),
   Row(
     name: "downloading",
     state: .downloading(receivedBytes: 245_200_000, totalBytes: 662_469_229),
-    title: "ダウンロードしています…", body: "37%(245 MB / 662 MB)", primaryAction: nil),
+    display: .init(
+      title: "ダウンロードしています…", body: "37%(245 MB / 662 MB)", isFailure: false, primary: nil)),
   Row(
-    name: "verifying", state: .verifying, title: "ダウンロードしたファイルを確認しています…", body: nil,
-    primaryAction: nil),
+    name: "verifying", state: .verifying,
+    display: .init(title: "ダウンロードしたファイルを確認しています…", body: nil, isFailure: false, primary: nil)),
   Row(
-    name: "installed", state: .installed, title: "音声認識モデルは取得済みです", body: nil,
-    primaryAction: "動作確認"),
+    name: "checking", state: .checking,
+    display: .init(title: "音声認識の動作を確認しています…", body: nil, isFailure: false, primary: nil)),
+  Row(
+    name: "checked-passed", state: .checked(.passed),
+    display: .init(
+      title: "音声認識の準備ができました", body: "~/Library/Application Support/amanuensis に保存しています。",
+      isFailure: false, primary: nil)),
+  Row(
+    name: "checked-failed", state: .checked(.failed),
+    display: .init(
+      title: "音声認識が正しく動いていません", body: "ランタイムとモデルを削除して、ダウンロードし直してください。",
+      isFailure: true, primary: SpeechButton(label: "再ダウンロード", action: .reinstall),
+      showsLog: true)),
+  Row(
+    name: "checked-timed-out", state: .checked(.timedOut),
+    display: .init(
+      title: "音声認識の動作確認が時間内に終わりませんでした", body: "ほかのアプリを終了してから再試行してください。",
+      isFailure: true, primary: SpeechButton(label: "再試行", action: .check))),
+  Row(
+    name: "checked-unavailable", state: .checked(.unavailable),
+    display: .init(
+      title: "動作確認用の音声がありません", body: "このビルドには動作確認用の音声が入っていません。", isFailure: false,
+      primary: nil)),
   Row(
     name: "insufficient-space",
     state: .insufficientSpace(required: 684_000_000, available: 512_000_000),
-    title: "空き容量が足りません",
-    body: "ダウンロードには 684 MB の空きが必要です(今の空きは 512 MB です)。不要なファイルを削除してから、もう一度お試しください。",
-    primaryAction: "再試行"),
+    display: .init(
+      title: "空き容量が足りません",
+      body: "ダウンロードには 684 MB の空きが必要です(今の空きは 512 MB です)。不要なファイルを削除してから、もう一度お試しください。",
+      isFailure: true, primary: retryDownload)),
   Row(
-    name: "failed-network", state: .failed(.network), title: "ダウンロードできませんでした",
-    body: "ネットワークの接続を確かめてから、もう一度お試しください。", primaryAction: "再試行"),
+    name: "failed-network", state: .failed(.network),
+    display: .init(
+      title: "ダウンロードできませんでした", body: "ネットワークの接続を確かめてから、もう一度お試しください。", isFailure: true,
+      primary: retryDownload)),
   Row(
-    name: "failed-server", state: .failed(.server), title: "ダウンロードできませんでした",
-    body: "時間をおいて、もう一度お試しください。", primaryAction: "再試行"),
+    name: "failed-server", state: .failed(.server),
+    display: .init(
+      title: "ダウンロードできませんでした", body: "時間をおいて、もう一度お試しください。", isFailure: true,
+      primary: retryDownload)),
   Row(
-    name: "failed-checksum", state: .failed(.checksumMismatch), title: "ダウンロードしたファイルが壊れていました",
-    body: "もう一度お試しください。", primaryAction: "再試行"),
+    name: "failed-checksum", state: .failed(.checksumMismatch),
+    display: .init(
+      title: "ダウンロードしたファイルが壊れていました", body: "もう一度お試しください。", isFailure: true,
+      primary: retryDownload)),
   Row(
-    name: "failed-file-system", state: .failed(.fileSystem), title: "ファイルを保存できませんでした",
-    body: "空き容量とフォルダーのアクセス権を確かめてから、もう一度お試しください。", primaryAction: "再試行"),
+    name: "failed-file-system", state: .failed(.fileSystem),
+    display: .init(
+      title: "ファイルを保存できませんでした", body: "空き容量とフォルダーのアクセス権を確かめてから、もう一度お試しください。",
+      isFailure: true, primary: retryDownload)),
   Row(
-    name: "failed-extraction", state: .failed(.extraction), title: "音声認識の準備ができませんでした",
-    body: "もう一度お試しください。", primaryAction: "再試行"),
+    name: "failed-extraction", state: .failed(.extraction),
+    display: .init(
+      title: "音声認識の準備ができませんでした", body: "もう一度お試しください。", isFailure: true,
+      primary: retryDownload)),
   Row(
-    name: "selfcheck-running", state: .installed, selfCheck: .running, title: "文字起こししています…",
-    body: nil, primaryAction: nil),
-  Row(
-    name: "selfcheck-passed", state: .installed,
-    selfCheck: .finished(SelfCheckResult(transcript: "明日 10時から会議を初めます", cer: 0.042)),
-    title: "動作確認の結果", body: "明日 10時から会議を初めます\n文字誤り率(CER)は 4.2% で、基準の 15% 以下です。",
-    primaryAction: "動作確認"),
-  Row(
-    name: "selfcheck-over", state: .installed,
-    selfCheck: .finished(SelfCheckResult(transcript: "あした じゅうじから かいぎ", cer: 0.235)),
-    title: "動作確認の結果", body: "あした じゅうじから かいぎ\n文字誤り率(CER)は 23.5% で、基準の 15% を超えています。",
-    primaryAction: "動作確認"),
-  Row(
-    name: "selfcheck-unavailable", state: .installed, selfCheck: .unavailable,
-    title: "動作確認用の音声がありません", body: "このビルドには動作確認用の音声が入っていません。", primaryAction: nil),
-  Row(
-    name: "selfcheck-launch-failed", state: .installed, selfCheck: .failed(.launchFailed),
-    title: "文字起こしに失敗しました", body: "もう一度お試しください。", primaryAction: "動作確認"),
-  Row(
-    name: "selfcheck-exited", state: .installed, selfCheck: .failed(.exited(status: 3)),
-    title: "文字起こしに失敗しました", body: "もう一度お試しください。", primaryAction: "動作確認"),
-  Row(
-    name: "selfcheck-timed-out", state: .installed, selfCheck: .failed(.timedOut),
-    title: "文字起こしが時間内に終わりませんでした", body: "ほかのアプリを終了してから、もう一度お試しください。",
-    primaryAction: "動作確認"),
+    name: "failed-removal", state: .failed(.removal),
+    display: .init(
+      title: "古いファイルを削除できませんでした", body: "フォルダーのアクセス権を確かめてから、もう一度お試しください。",
+      isFailure: true, primary: SpeechButton(label: "再試行", action: .reinstall))),
 ]
 
 @Test(arguments: rows.map(\.name))
 func settingsTextMatchesTable(name: String) throws {
   let row = try #require(rows.first { $0.name == name })
-  #expect(SpeechSettingsText.title(for: row.state, selfCheck: row.selfCheck) == row.title)
-  #expect(SpeechSettingsText.body(for: row.state, selfCheck: row.selfCheck) == row.body)
+  #expect(SpeechSettingsText.display(for: row.state, folder: folder) == row.display)
+}
+
+@Test func logOpenFailedMatchesTable() {
   #expect(
-    SpeechSettingsText.primaryAction(for: row.state, selfCheck: row.selfCheck) == row.primaryAction)
+    SpeechSettingsText.logOpenFailed
+      == .init(
+        title: "ログを開けませんでした", body: "フォルダーのアクセス権を確かめてください。", isFailure: true,
+        primary: nil))
+}
+
+@Test func noRemovedButtons() {
+  for row in rows {
+    let label = SpeechSettingsText.display(for: row.state, folder: folder).primary?.label
+    #expect(label != "動作確認" && label != "Finder で開く", "\(row.name) に削除したボタンを出さない")
+  }
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_SNAPSHOT_DIR"] != nil))
@@ -93,14 +121,13 @@ func settingsTextMatchesTable(name: String) throws {
   let directory = URL(
     filePath: try #require(ProcessInfo.processInfo.environment["AMANUENSIS_SNAPSHOT_DIR"]))
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-  let folder = FileManager.default.temporaryDirectory.appending(path: "amanuensis-snapshot")
   for row in rows {
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       let content = Form {
         Section("音声認識") {
           SpeechSettingsView(
-            state: row.state, selfCheck: row.selfCheck, folder: folder, onDownload: {},
-            onSelfCheck: {})
+            state: row.state, installation: SpeechInstallation(directory: folder),
+            perform: { _ in })
         }
       }
       .formStyle(.grouped)
