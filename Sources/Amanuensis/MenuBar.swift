@@ -44,16 +44,22 @@ final class MenuBar: NSObject {
   /// 失敗を利用者に伝える。権限の不足と開始の失敗は警告で、それ以外は通知で伝える。
   static func present(_ problem: RecordingProblem) {
     if RecordingText.alerts(for: problem) {
-      if case .missingPermissions(let missing) = problem,
-        let action = RecordingText.action(for: problem)
-      {
-        if alert(problem, buttons: [action, "閉じる"]) == .alertFirstButtonReturn,
-          let first = missing.first
-        {
-          NSWorkspace.shared.open(first.settingsURL)
+      // MainActor のジョブの中の runModal は閉じるまで MainActor の処理を止め、時間切れの後に遅れて始まった
+      // 取り込みを止められない。実行ループのブロックから始めたモーダルはメインキューを処理する。
+      RunLoop.main.perform(inModes: [.common]) {
+        MainActor.assumeIsolated {
+          if case .missingPermissions(let missing) = problem,
+            let action = RecordingText.action(for: problem)
+          {
+            if alert(problem, buttons: [action, "閉じる"]) == .alertFirstButtonReturn,
+              let first = missing.first
+            {
+              NSWorkspace.shared.open(first.settingsURL)
+            }
+          } else {
+            alert(problem, buttons: ["閉じる"])
+          }
         }
-      } else {
-        alert(problem, buttons: ["閉じる"])
       }
       return
     }
