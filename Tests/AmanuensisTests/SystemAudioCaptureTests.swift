@@ -73,6 +73,15 @@ private func floatDescription(channels: UInt32, planar: Bool) -> AudioStreamBasi
   #expect(format.isInterleaved == !planar)
 }
 
+@Test func threeChannelPacked24BitIsRejected() {
+  let description = AudioStreamBasicDescription(
+    mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    mBytesPerPacket: 9, mFramesPerPacket: 1, mBytesPerFrame: 9,
+    mChannelsPerFrame: 3, mBitsPerChannel: 24, mReserved: 0)
+  #expect(inputFormat(from: description) == nil)
+}
+
 @Test(arguments: [(UInt32(1), false), (UInt32(2), false), (UInt32(2), true)])
 func upToTwoChannelsKeepPlainFormat(channels: UInt32, planar: Bool) throws {
   var description = floatDescription(channels: channels, planar: planar)

@@ -230,7 +230,10 @@ func inputFormat(from description: AudioStreamBasicDescription) -> AVAudioFormat
     let layout = AVAudioChannelLayout(
       layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | description.mChannelsPerFrame)
   else { return nil }
-  return AVAudioFormat(streamDescription: &description, channelLayout: layout)
+  guard let format = AVAudioFormat(streamDescription: &description, channelLayout: layout),
+    format.commonFormat != .otherFormat
+  else { return nil }
+  return format
 }
 
 private func propertyAddress(
