@@ -18,15 +18,16 @@ private let problemRows = [
     title: "マイクの使用が許可されていません",
     body: "システム設定の「マイク」で amanuensis を許可してから、もう一度録音を開始してください。", action: "システム設定を開く"),
   ProblemRow(
-    name: "missing-screen", problem: .missingPermissions([.screenAndSystemAudio]),
+    name: "missing-system-audio", problem: .missingPermissions([.systemAudio]),
     title: "システム音声の録音が許可されていません",
-    body: "システム設定の「画面収録とシステムオーディオ録音」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。",
+    body:
+      "システム設定の「画面収録とシステムオーディオ録音」にある「システムオーディオ録音のみ」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。",
     action: "システム設定を開く"),
   ProblemRow(
-    name: "missing-both", problem: .missingPermissions([.microphone, .screenAndSystemAudio]),
+    name: "missing-both", problem: .missingPermissions([.microphone, .systemAudio]),
     title: "マイクとシステム音声の録音が許可されていません",
     body:
-      "システム設定の「マイク」と「画面収録とシステムオーディオ録音」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。",
+      "システム設定の「マイク」と、「画面収録とシステムオーディオ録音」にある「システムオーディオ録音のみ」で amanuensis を許可してください。許可した後は amanuensis を開き直してから、録音を開始してください。",
     action: "システム設定を開く"),
   ProblemRow(
     name: "folder-missing", problem: .folderMissing, title: "録音を開始できませんでした",
@@ -64,7 +65,7 @@ func problemTextMatchesTable(name: String) throws {
     Permission.microphone.settingsURL.absoluteString
       == "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
   #expect(
-    Permission.screenAndSystemAudio.settingsURL.absoluteString
+    Permission.systemAudio.settingsURL.absoluteString
       == "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
 }
 

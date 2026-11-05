@@ -47,7 +47,7 @@ enum RecorderState: Equatable {
     folder: RecordingFolder, missingPermissions: @escaping () async -> [Permission],
     startCapture: @escaping StartCapture,
     report: @escaping @MainActor (RecordingProblem) -> Void,
-    // shortcut: 10 秒は実測なしの仮の値, ScreenCaptureKit の開始の実測で決め直す
+    // shortcut: 10 秒は実測 2 回(tap の作成 0.07 秒・開始 0.0002 秒、macOS 26.6)からの仮の値, capture started の start_ms を 20 回分集めたら p99.9 で決め直す
     startTimeout: Duration = .seconds(10)
   ) {
     self.folder = folder
@@ -232,7 +232,7 @@ extension Permission {
   fileprivate var logName: String {
     switch self {
     case .microphone: "microphone"
-    case .screenAndSystemAudio: "screen_and_system_audio"
+    case .systemAudio: "system_audio"
     }
   }
 }
