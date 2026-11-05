@@ -46,21 +46,19 @@ private let ownAggregate = AudioDevice(
 }
 
 /// `defaults write` で壊された値。どれもシステムの既定に戻る。
-private func brokenValue(_ name: String) -> Any {
-  switch name {
-  case "string": "x"
-  case "number": 1
-  case "empty-uid": ["uid": "", "name": "A"]
-  case "name-only": ["name": "A"]
-  default: ["uid": 1, "name": "A"] as [String: Any]
-  }
-}
+private let brokenValues: [(String, any Sendable)] = [
+  ("string", "x"),
+  ("number", 1),
+  ("empty-uid", ["uid": "", "name": "A"]),
+  ("name-only", ["name": "A"]),
+  ("number-uid", ["uid": 1, "name": "A"] as [String: any Sendable]),
+]
 
-@Test(arguments: ["string", "number", "empty-uid", "name-only", "number-uid"])
-func brokenMicrophoneValueFallsBackToSystemDefault(name: String) {
+@Test(arguments: brokenValues)
+func brokenMicrophoneValueFallsBackToSystemDefault(name: String, value: any Sendable) {
   let sandbox = Sandbox()
   defer { sandbox.remove() }
-  sandbox.defaults.set(brokenValue(name), forKey: "microphone")
+  sandbox.defaults.set(value, forKey: "microphone")
   #expect(sandbox.setting().choice == .systemDefault, "\(name)")
 }
 
@@ -71,4 +69,52 @@ func brokenMicrophoneValueFallsBackToSystemDefault(name: String) {
   #expect(
     try selectedMicrophone(uid: "jump-uid", name: "Jump Desktop Microphone", in: [builtIn, jump])
       == 12, "一覧にある UID ならそのデバイスを使う")
+}
+
+/// 偽の Core Audio の一覧。通知の偽物と組で使う。
+@MainActor private final class DeviceBox {
+  var devices: [AudioDevice] = []
+  var notify: (@MainActor @Sendable () -> Void)?
+
+  func list() -> MicrophoneList {
+    MicrophoneList(read: { self.devices }, subscribe: { self.notify = $0 })
+  }
+}
+
+@Test @MainActor func listFollowsDeviceListNotifications() throws {
+  let box = DeviceBox()
+  box.devices = [builtIn, speaker]
+  let list = box.list()
+  #expect(list.devices.map(\.uid) == ["builtin"], "開いた時点の入力デバイスだけを出す")
+  let notify = try #require(box.notify, "一覧の変更を購読する")
+
+  box.devices = [builtIn, speaker, jump]
+  notify()
+  #expect(list.devices.map(\.uid) == ["builtin", "jump-uid"], "接続したデバイスが増える")
+
+  box.devices = [builtIn, speaker]
+  notify()
+  #expect(list.devices.map(\.uid) == ["builtin"], "切断したデバイスが消える")
+}
+
+@Test func savedChoiceIsSelectedInMenu() {
+  let sandbox = Sandbox()
+  defer { sandbox.remove() }
+  sandbox.setting().setChoice(.device(uid: "jump-uid", name: "Jump Desktop Microphone"))
+  let rows = MicrophoneMenu.rows(for: sandbox.setting().choice, devices: [builtIn, jump])
+  #expect(
+    rows.map(\.label) == ["システムの既定", "Jump Desktop Microphone", "MacBook Pro のマイク"],
+    "システムの既定、次に名前の順")
+  #expect(rows.filter { $0.choice.uid == "jump-uid" }.count == 1, "保存したマイクの行がちょうど 1 つ")
+  #expect(rows.first?.choice == .systemDefault)
+}
+
+@Test func missingSavedChoiceKeepsRow() {
+  let rows = MicrophoneMenu.rows(
+    for: .device(uid: "jump-uid", name: "Jump Desktop Microphone"), devices: [builtIn])
+  #expect(
+    rows.map(\.label) == [
+      "システムの既定", "MacBook Pro のマイク", "Jump Desktop Microphone(接続されていません)",
+    ])
+  #expect(rows.last?.choice == .device(uid: "jump-uid", name: "Jump Desktop Microphone"))
 }

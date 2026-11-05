@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import Observation
 import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "capture")
@@ -93,3 +94,64 @@ nonisolated func readAudioDevices() -> [AudioDevice] {
 }
 
 nonisolated func readInputDevices() -> [AudioDevice] { inputDevices(from: readAudioDevices()) }
+
+/// 設定画面に出す入力デバイスの一覧。Core Audio の一覧の変更を購読して読み直す。
+@MainActor @Observable final class MicrophoneList {
+  private(set) var devices: [AudioDevice] = []
+  @ObservationIgnored private let read: () -> [AudioDevice]
+
+  /// `read` は Core Audio のデバイスの一覧を返す。`subscribe` は一覧が変わるたびに渡した処理を呼ぶ。
+  init(
+    read: @escaping () -> [AudioDevice],
+    subscribe: (@escaping @MainActor @Sendable () -> Void) -> Void
+  ) {
+    self.read = read
+    subscribe { [weak self] in self?.refresh() }
+    refresh()
+  }
+
+  // shortcut: 一覧はメインスレッドで読む, coreaudiod の応答待ちで設定画面が固まる報告があれば listener の queue で読んでから MainActor へ渡す
+  func refresh() {
+    devices = inputDevices(from: read())
+  }
+}
+
+/// 設定の「マイク」のポップアップの行。
+enum MicrophoneMenu {
+  struct Row: Equatable {
+    let choice: MicrophoneChoice
+    let label: String
+  }
+
+  /// システムの既定、名前の順の入力デバイス、一覧に無い保存したマイクの順。
+  static func rows(for current: MicrophoneChoice, devices: [AudioDevice]) -> [Row] {
+    let connected =
+      devices
+      .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+      .map { Row(choice: .device(uid: $0.uid, name: $0.name), label: $0.name) }
+    var rows = [Row(choice: .systemDefault, label: "システムの既定")] + connected
+    if case .device(let uid, let name) = current, !devices.contains(where: { $0.uid == uid }) {
+      rows.append(Row(choice: current, label: "\(name)(接続されていません)"))
+    }
+    return rows
+  }
+}
+
+/// Core Audio のデバイスの一覧が変わるたびに、メインキューで `onChange` を呼ぶ。listener はアプリの終了まで外さない。
+// listener の block を MainActor の文脈で作ると、HAL から呼ばれた時点で異常終了する(SystemAudioCapture.swift の openCapture と同じ)。
+nonisolated func subscribeToDeviceListChanges(_ onChange: @escaping @MainActor @Sendable () -> Void)
+{
+  var address = propertyAddress(kAudioHardwarePropertyDevices)
+  let status = AudioObjectAddPropertyListenerBlock(
+    AudioObjectID(kAudioObjectSystemObject), &address, .main
+  ) { _, _ in
+    MainActor.assumeIsolated { onChange() }
+  }
+  if status != noErr {
+    logger.error(
+      "microphones subscribe failed error.type=\(status, privacy: .public) app.error.origin=system")
+  }
+}
+
+@MainActor let microphones = MicrophoneList(
+  read: readAudioDevices, subscribe: subscribeToDeviceListChanges)
