@@ -27,6 +27,20 @@ private let ownAggregate = AudioDevice(
   #expect(inputs.map(\.uid) == ["builtin", "jump-uid"], "出力専用と録音中の集約デバイスを除く")
 }
 
+@Test func inputDevicesExcludeEmptyUID() {
+  let noUID = AudioDevice(id: 14, uid: "", name: "Virtual Mic", hasInput: true)
+  #expect(inputDevices(from: [builtIn, noUID]).map(\.id) == [10], "UID が空のデバイスは保存できないので出さない")
+}
+
+@Test func unnamedMicrophoneChoiceIsReadBackAsItsUID() {
+  let sandbox = Sandbox()
+  defer { sandbox.remove() }
+  sandbox.setting().setChoice(.device(uid: "virtual-uid", name: ""))
+  #expect(
+    sandbox.setting().choice == .device(uid: "virtual-uid", name: "virtual-uid"),
+    "名前が空のデバイスを選んでも既定に戻らず、UID を名前にして読み戻す")
+}
+
 @Test func microphoneChoiceIsReadBackByAnotherInstance() {
   let sandbox = Sandbox()
   defer { sandbox.remove() }

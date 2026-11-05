@@ -33,13 +33,13 @@ struct MicrophoneSetting {
     self.defaults = defaults
   }
 
-  /// 選択。保存値が空でない文字列の "uid" と "name" を持つ辞書でなければ(`defaults write` で壊された値を含む)システムの既定に戻る。
+  /// 選択。保存値が空でない文字列の "uid" を持つ辞書でなければ(`defaults write` で壊された値を含む)システムの既定に戻る。"name" が空か文字列でなければ uid を名前にする。
   var choice: MicrophoneChoice {
     guard let saved = defaults.dictionary(forKey: Self.key),
-      let uid = saved["uid"] as? String, !uid.isEmpty,
-      let name = saved["name"] as? String, !name.isEmpty
+      let uid = saved["uid"] as? String, !uid.isEmpty
     else { return .systemDefault }
-    return .device(uid: uid, name: name)
+    let name = saved["name"] as? String ?? ""
+    return .device(uid: uid, name: name.isEmpty ? uid : name)
   }
 
   /// `.systemDefault` は保存値を消す。
@@ -54,9 +54,9 @@ struct MicrophoneSetting {
 /// 録音中に自分で作る集約デバイスの UID の接頭辞。
 let privateAggregateUIDPrefix = "io.github.mosidas.amanuensis.aggregate."
 
-/// 録音に使える入力デバイス。出力専用のデバイスと自分の集約デバイスを除く。
+/// 録音に使える入力デバイス。出力専用のデバイス、自分の集約デバイス、UID が空で選択を保存できないデバイスを除く。
 func inputDevices(from all: [AudioDevice]) -> [AudioDevice] {
-  all.filter { $0.hasInput && !$0.uid.hasPrefix(privateAggregateUIDPrefix) }
+  all.filter { $0.hasInput && !$0.uid.isEmpty && !$0.uid.hasPrefix(privateAggregateUIDPrefix) }
 }
 
 /// 保存した UID のデバイス。`inputs` に無ければ `.selectedMicrophoneMissing` を投げる。
