@@ -159,6 +159,7 @@ private struct MenuRow {
       #expect(alpha(0, 0) == 0, "\(rep.pixelsWide)px: 角は円の外")
       #expect(alpha(4, 5) == 1, "\(rep.pixelsWide)px: 円の内で羽根ペンの外は塗る")
       #expect(alpha(10.4, 6.8) == 0, "\(rep.pixelsWide)px: 羽は抜く")
+      #expect(alpha(11, 15.4) == 1, "\(rep.pixelsWide)px: 下線は抜かない")
     }
     let pixels = try #require(recording.tiffRepresentation)
     #expect(pixels != symbolPixels("record.circle"), "録音中は record.circle でない")
