@@ -19,18 +19,21 @@ final class MenuBar: NSObject {
     observe()
   }
 
-  /// 状態に応じたメニューバーのアイコン。録音中は `record.circle`、それ以外は `resources` の羽根ペンの PDF。
-  /// PDF を読めないとき(`swift run`・同梱漏れ)は `waveform` にして、メニューバーの項目を消さない。
+  /// 状態に応じたメニューバーのアイコン。録音中は `resources` の羽根ペンを抜いた円の TIFF、それ以外は羽根ペンの PDF。
+  /// 画像を読めないとき(`swift run`・同梱漏れ)は `waveform` にして、メニューバーの項目を消さない。
   static func icon(for state: RecorderState, resources: URL?) -> NSImage {
+    let file =
+      switch state {
+      case .recording: "MenuBarIconRecording.tiff"
+      default: "MenuBarIcon.pdf"
+      }
     let image: NSImage
-    if case .recording = state {
-      image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: nil)!
-    } else if let url = resources?.appending(path: "MenuBarIcon.pdf"),
-      let quill = NSImage(contentsOf: url)
-    {
-      image = quill
+    if let url = resources?.appending(path: file), let loaded = NSImage(contentsOf: url) {
+      image = loaded
     } else {
-      logger.error("menubar icon missing error.type=menubar_icon_missing app.error.origin=system")
+      logger.error(
+        "menubar icon missing error.type=menubar_icon_missing app.error.origin=system file=\(file, privacy: .public)"
+      )
       image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)!
     }
     image.isTemplate = true

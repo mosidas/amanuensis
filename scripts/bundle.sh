@@ -26,6 +26,7 @@ cp "$(swift build -c release --show-bin-path)/Amanuensis" "$app/Contents/MacOS/A
 mkdir -p "$app/Contents/Resources"
 cp -R Resources/SelfCheck "$app/Contents/Resources/SelfCheck"
 cp Resources/MenuBarIcon.pdf "$app/Contents/Resources/MenuBarIcon.pdf"
+cp Resources/MenuBarIconRecording.tiff "$app/Contents/Resources/MenuBarIconRecording.tiff"
 
 # Resources/AppIcon.png(1024 px)から 10 サイズの iconset を作り、AppIcon.icns に固める。
 tmp=$(mktemp -d)
