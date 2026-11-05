@@ -148,6 +148,9 @@ private struct MenuRow {
     let recording = MenuBar.icon(for: state, resources: repoResources)
     #expect(recording.isTemplate)
     #expect(!recording.representations.contains { $0 is NSPDFImageRep }, "録音中は羽根ペンでない")
+    let pixels = try #require(recording.tiffRepresentation)
+    #expect(pixels == symbolPixels("record.circle"), "録音中は record.circle")
+    #expect(pixels != symbolPixels("waveform"), "録音中は PDF が無いときの waveform とも違う")
     #expect(recording.accessibilityDescription == "amanuensis(録音中)")
   }
 }
@@ -161,6 +164,10 @@ private struct MenuRow {
   #expect(image.isTemplate)
   #expect(!image.representations.contains { $0 is NSPDFImageRep }, "PDF が無ければ SF Symbol")
   #expect(image.accessibilityDescription == "amanuensis")
+}
+
+private func symbolPixels(_ name: String) -> Data? {
+  NSImage(systemSymbolName: name, accessibilityDescription: nil)?.tiffRepresentation
 }
 
 private let repoResources = URL(filePath: #filePath)
