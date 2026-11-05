@@ -1,6 +1,9 @@
 import AppKit
+import OSLog
 import Observation
 import UserNotifications
+
+private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "menubar")
 
 /// メニューバーのアイコンとメニュー。録音の状態が変わるたびに `MenuContent` から作り直す。
 @MainActor
@@ -14,6 +17,25 @@ final class MenuBar: NSObject {
     menu.autoenablesItems = false
     statusItem.menu = menu
     observe()
+  }
+
+  /// 状態に応じたメニューバーのアイコン。録音中は `record.circle`、それ以外は `resources` の羽根ペンの PDF。
+  /// PDF を読めないとき(`swift run`・同梱漏れ)は `waveform` にして、メニューバーの項目を消さない。
+  static func icon(for state: RecorderState, resources: URL?) -> NSImage {
+    let image: NSImage
+    if case .recording = state {
+      image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: nil)!
+    } else if let url = resources?.appending(path: "MenuBarIcon.pdf"),
+      let quill = NSImage(contentsOf: url)
+    {
+      image = quill
+    } else {
+      logger.error("menubar icon missing error.type=menubar_icon_missing app.error.origin=system")
+      image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)!
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = MenuContent.accessibilityName(for: state)
+    return image
   }
 
   /// 失敗を利用者に伝える。権限の不足は警告で、それ以外は通知で伝える。
@@ -74,11 +96,7 @@ final class MenuBar: NSObject {
   }
 
   private func render(_ state: RecorderState) {
-    let image = NSImage(
-      systemSymbolName: MenuContent.iconName(for: state),
-      accessibilityDescription: MenuContent.accessibilityName(for: state))
-    image?.isTemplate = true
-    statusItem.button?.image = image
+    statusItem.button?.image = Self.icon(for: state, resources: Bundle.main.resourceURL)
 
     menu.removeAllItems()
     for entry in MenuContent.entries(for: state, now: .now) {

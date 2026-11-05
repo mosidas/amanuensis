@@ -81,10 +81,6 @@ enum MenuContent {
     return head + [.item("設定…", .settings), .separator, .item("amanuensis を終了", .quit)]
   }
 
-  static func iconName(for state: RecorderState) -> String {
-    if case .recording = state { "record.circle" } else { "waveform" }
-  }
-
   static func accessibilityName(for state: RecorderState) -> String {
     if case .recording = state { "amanuensis(録音中)" } else { "amanuensis" }
   }

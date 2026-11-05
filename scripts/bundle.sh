@@ -25,6 +25,7 @@ cp "$(swift build -c release --show-bin-path)/Amanuensis" "$app/Contents/MacOS/A
 # 動作確認用の音声と原稿(Resources/SelfCheck/sample.{wav,txt})をアプリに同梱する。
 mkdir -p "$app/Contents/Resources"
 cp -R Resources/SelfCheck "$app/Contents/Resources/SelfCheck"
+cp Resources/MenuBarIcon.pdf "$app/Contents/Resources/MenuBarIcon.pdf"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

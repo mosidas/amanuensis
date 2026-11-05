@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 
 @testable import Amanuensis
@@ -140,10 +140,29 @@ private struct MenuRow {
 }
 
 @Test @MainActor func iconShowsRecording() async throws {
-  #expect(MenuContent.iconName(for: .idle) == "waveform")
-  #expect(MenuContent.accessibilityName(for: .idle) == "amanuensis")
+  let idle = MenuBar.icon(for: .idle, resources: repoResources)
+  #expect(idle.isTemplate)
+  #expect(idle.representations.contains { $0 is NSPDFImageRep }, "待機時は羽根ペンの PDF")
+  #expect(idle.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    #expect(MenuContent.iconName(for: state) == "record.circle")
-    #expect(MenuContent.accessibilityName(for: state) == "amanuensis(録音中)")
+    let recording = MenuBar.icon(for: state, resources: repoResources)
+    #expect(recording.isTemplate)
+    #expect(!recording.representations.contains { $0 is NSPDFImageRep }, "録音中は羽根ペンでない")
+    #expect(recording.accessibilityDescription == "amanuensis(録音中)")
   }
 }
+
+@Test @MainActor func iconFallsBackWithoutPDF() throws {
+  let empty = FileManager.default.temporaryDirectory.appending(
+    path: "RecordingTextTests-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: empty) }
+  let image = MenuBar.icon(for: .idle, resources: empty)
+  #expect(image.isTemplate)
+  #expect(!image.representations.contains { $0 is NSPDFImageRep }, "PDF が無ければ SF Symbol")
+  #expect(image.accessibilityDescription == "amanuensis")
+}
+
+private let repoResources = URL(filePath: #filePath)
+  .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+  .appending(path: "Resources")
