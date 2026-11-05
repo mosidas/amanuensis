@@ -215,10 +215,22 @@ nonisolated private func inputFormat(of device: AudioObjectID) throws(StartFailu
   }
   var description = AudioStreamBasicDescription()
   try check(read(stream, kAudioStreamPropertyVirtualFormat, into: &description), "find_microphone")
-  guard let format = AVAudioFormat(streamDescription: &description) else {
+  guard let format = inputFormat(from: description) else {
     throw StartFailure(step: "find_microphone", type: "unsupported_format")
   }
   return format
+}
+
+/// 入力ストリームの ASBD から形式を作る。作れなければ nil を返す。
+func inputFormat(from description: AudioStreamBasicDescription) -> AVAudioFormat? {
+  var description = description
+  if let format = AVAudioFormat(streamDescription: &description) { return format }
+  // AVAudioFormat は 3 ch 以上の形式をチャンネルレイアウトなしでは作れない(AVAudioFormat.h)。
+  guard
+    let layout = AVAudioChannelLayout(
+      layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | description.mChannelsPerFrame)
+  else { return nil }
+  return AVAudioFormat(streamDescription: &description, channelLayout: layout)
 }
 
 private func propertyAddress(
@@ -367,7 +379,7 @@ private final class CapturePipe: @unchecked Sendable {
   }
 }
 
-/// IOProc が渡したバッファーを、`format` のまま `AVAudioPCMBuffer` へ写す。
+/// IOProc が渡したバッファーを `AVAudioPCMBuffer` へ写す。3 ch 以上は先頭チャンネルだけのモノラルにする。
 /// バッファーの数・大きさが形式と合わなければ nil を返す。形式が必要とする数より多いバッファーは捨てる。
 func pcmBuffer(_ list: UnsafePointer<AudioBufferList>, format: AVAudioFormat) -> AVAudioPCMBuffer? {
   let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
@@ -378,8 +390,25 @@ func pcmBuffer(_ list: UnsafePointer<AudioBufferList>, format: AVAudioFormat) ->
   let frames = Int(sources[0].mDataByteSize) / bytesPerFrame
   guard
     frames > 0,
-    sources.allSatisfy({ Int($0.mDataByteSize) == frames * bytesPerFrame && $0.mData != nil }),
-    let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+    sources.allSatisfy({ Int($0.mDataByteSize) == frames * bytesPerFrame && $0.mData != nil })
+  else { return nil }
+  if format.channelCount > 2 {
+    guard
+      let mono = AVAudioFormat(
+        commonFormat: format.commonFormat, sampleRate: format.sampleRate, channels: 1,
+        interleaved: false),
+      let copy = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: AVAudioFrameCount(frames)),
+      let destination = copy.mutableAudioBufferList.pointee.mBuffers.mData
+    else { return nil }
+    copy.frameLength = AVAudioFrameCount(frames)
+    let sampleBytes = Int(mono.streamDescription.pointee.mBytesPerFrame)
+    for frame in 0..<frames {
+      (destination + frame * sampleBytes).copyMemory(
+        from: sources[0].mData! + frame * bytesPerFrame, byteCount: sampleBytes)
+    }
+    return copy
+  }
+  guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
   else { return nil }
   copy.frameLength = AVAudioFrameCount(frames)
   let destinations = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
