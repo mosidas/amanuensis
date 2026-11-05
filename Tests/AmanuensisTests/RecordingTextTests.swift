@@ -36,8 +36,46 @@ private let problemRows = [
     name: "folder-not-writable", problem: .folderNotWritable, title: "録音を開始できませんでした",
     body: "保存先のフォルダーに書き込めません。フォルダーのアクセス権を確かめるか、設定で別の保存先を選んでください。"),
   ProblemRow(
-    name: "capture-failed", problem: .captureFailed, title: "録音を開始できませんでした",
-    body: "もう一度お試しください。"),
+    name: "no-input-device", problem: .captureFailed(.noInputDevice), title: "録音を開始できませんでした",
+    body: "マイクが見つかりません。システム設定の「サウンド」にある「入力」でマイクを選んでから、もう一度録音を開始してください。"),
+  ProblemRow(
+    name: "unsupported-input",
+    problem: .captureFailed(.unsupportedInput(name: "Jump Desktop Microphone", channels: 8)),
+    title: "録音を開始できませんでした",
+    body:
+      "「Jump Desktop Microphone」(8 チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+  ),
+  ProblemRow(
+    name: "unsupported-input-unnamed",
+    problem: .captureFailed(.unsupportedInput(name: nil, channels: 8)), title: "録音を開始できませんでした",
+    body:
+      "「既定の入力デバイス」(8 チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+  ),
+  ProblemRow(
+    name: "tap-create", problem: .captureFailed(.failed(step: "create_tap", type: "-50")),
+    title: "録音を開始できませんでした",
+    body:
+      "システム音声を取り込めませんでした。amanuensis を開き直してから録音を開始し、直らないときはエラー(create_tap / -50)を添えて https://github.com/mosidas/amanuensis/issues に報告してください。"
+  ),
+  ProblemRow(
+    name: "tap-aggregate", problem: .captureFailed(.failed(step: "create_aggregate", type: "-50")),
+    title: "録音を開始できませんでした",
+    body:
+      "システム音声を取り込めませんでした。amanuensis を開き直してから録音を開始し、直らないときはエラー(create_aggregate / -50)を添えて https://github.com/mosidas/amanuensis/issues に報告してください。"
+  ),
+  ProblemRow(
+    name: "unknown",
+    problem: .captureFailed(.failed(step: "add_listener", type: "1852797029")),
+    title: "録音を開始できませんでした",
+    body:
+      "録音の準備中にエラー(add_listener / 1852797029)が発生しました。もう一度録音を開始し、直らないときはこのエラーを添えて https://github.com/mosidas/amanuensis/issues に報告してください。"
+  ),
+  ProblemRow(
+    name: "start-timeout", problem: .captureFailed(.failed(step: "start", type: "timeout")),
+    title: "録音を開始できませんでした",
+    body:
+      "録音の準備中にエラー(start / timeout)が発生しました。もう一度録音を開始し、直らないときはこのエラーを添えて https://github.com/mosidas/amanuensis/issues に報告してください。"
+  ),
   ProblemRow(
     name: "interrupted", problem: .interrupted, title: "録音が途中で止まりました",
     body: "続けて録音するには、もう一度録音を開始してください。"),
@@ -58,6 +96,39 @@ func problemTextMatchesTable(name: String) throws {
   #expect(RecordingText.title(for: row.problem) == row.title)
   #expect(RecordingText.body(for: row.problem) == row.body)
   #expect(RecordingText.action(for: row.problem) == row.action)
+}
+
+/// 録音中と終了時の失敗だけが通知で、権限の不足と開始の失敗は警告で伝わる。
+private let notifiedRows: Set = ["interrupted", "write-failed", "save-failed", "discard-failed"]
+
+@Test(arguments: problemRows.map(\.name))
+func startFailuresAlertOthersNotify(name: String) throws {
+  let row = try #require(problemRows.first { $0.name == name })
+  #expect(RecordingText.alerts(for: row.problem) == !notifiedRows.contains(name), "\(name)")
+}
+
+@Test(arguments: [
+  ("start_device", "-10851"), ("find_microphone", "-50"), ("create_ioproc", "no_ioproc"),
+  ("x", "y"),
+])
+func startFailureTextIsNeverEmpty(step: String, type: String) {
+  let problem = RecordingProblem.captureFailed(.failed(step: step, type: type))
+  #expect(!RecordingText.title(for: problem).isEmpty)
+  let body = RecordingText.body(for: problem)
+  #expect(body.contains(step), "本文が step を含む")
+  #expect(body.contains(type), "本文が type を含む")
+}
+
+@Test func startFailureKeepsLogNames() {
+  let cases: [(StartFailure, String, String)] = [
+    (.noInputDevice, "find_microphone", "no_input_device"),
+    (.unsupportedInput(name: "A", channels: 8), "find_microphone", "unsupported_format"),
+    (.failed(step: "create_tap", type: "-50"), "create_tap", "-50"),
+  ]
+  for (failure, step, type) in cases {
+    #expect(failure.step == step, "\(failure)")
+    #expect(failure.type == type, "\(failure)")
+  }
 }
 
 @Test func settingsURLOpensPrivacyPane() {
