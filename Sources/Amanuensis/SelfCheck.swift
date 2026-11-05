@@ -3,8 +3,8 @@ import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "selfcheck")
 
-/// 動作確認で CER をこの値以下なら基準内とする。
-let selfCheckCERThreshold = 0.15
+/// 動作確認で CER がこの値以下なら合格とする。
+let selfCheckMaxCER = 0.15
 
 /// 動作確認の結果。起動できない・異常終了・CER が基準を超えたは `failed`、`timeout` 内に終わらなければ `timedOut`、
 /// 同梱の音声が無ければ `unavailable`。
@@ -71,8 +71,8 @@ func runSelfCheck(
   logger.info(
     "selfcheck finished cer=\(cer, privacy: .public) chars=\(transcript.count, privacy: .public)")
   let scores =
-    "cer=\(String(format: "%.4f", cer)) threshold=\(selfCheckCERThreshold) transcript=\(oneLine(transcript))"
-  guard cer <= selfCheckCERThreshold else {
+    "cer=\(String(format: "%.4f", cer)) threshold=\(selfCheckMaxCER) transcript=\(oneLine(transcript))"
+  guard cer <= selfCheckMaxCER else {
     logger.error("selfcheck failed error.type=cer_over_threshold")
     appendSelfCheckLog("selfcheck failed error.type=cer_over_threshold \(scores)", to: log)
     return .failed
