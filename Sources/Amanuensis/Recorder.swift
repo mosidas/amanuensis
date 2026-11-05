@@ -99,7 +99,7 @@ enum RecorderState: Equatable {
         "recording failed step=start error.type=\(type, privacy: .public) app.error.origin=system")
       try? FileManager.default.removeItem(at: meeting)
       ProcessInfo.processInfo.endActivity(activity)
-      refuse(.captureFailed)
+      refuse(error as? RecordingProblem ?? .captureFailed(.failed(step: "start", type: type)))
       return
     }
     if let problem = interruptedWhileStarting {

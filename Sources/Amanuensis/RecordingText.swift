@@ -30,13 +30,23 @@ enum RecordingText {
       }
     case .folderMissing: "保存先のフォルダーが見つかりません。設定で保存先を選び直してください。"
     case .folderNotWritable: "保存先のフォルダーに書き込めません。フォルダーのアクセス権を確かめるか、設定で別の保存先を選んでください。"
-    case .captureFailed: "もう一度お試しください。"
+    case .captureFailed(.noInputDevice):
+      "マイクが見つかりません。システム設定の「サウンド」にある「入力」でマイクを選んでから、もう一度録音を開始してください。"
+    case .captureFailed(.unsupportedInput(let name, let channels)):
+      "「\(name ?? "既定の入力デバイス")」(\(channels) チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+    case .captureFailed(.failed(let step, let type))
+    where ["create_tap", "create_aggregate"].contains(step):
+      "システム音声を取り込めませんでした。amanuensis を開き直してから録音を開始し、直らないときはエラー(\(step) / \(type))を添えて \(issuesURL) に報告してください。"
+    case .captureFailed(.failed(let step, let type)):
+      "録音の準備中にエラー(\(step) / \(type))が発生しました。もう一度録音を開始し、直らないときはこのエラーを添えて \(issuesURL) に報告してください。"
     case .interrupted: "続けて録音するには、もう一度録音を開始してください。"
     case .writeFailed: "空き容量を確かめてから、もう一度録音を開始してください。"
     case .saveFailed: "空き容量とフォルダーのアクセス権を確かめてください。"
     case .discardFailed: "Finder で録音のフォルダーを削除してください。"
     }
   }
+
+  private static let issuesURL = "https://github.com/mosidas/amanuensis/issues"
 
   /// 主ボタンの名前。押せる操作が無い失敗では nil。
   static func action(for problem: RecordingProblem) -> String? {

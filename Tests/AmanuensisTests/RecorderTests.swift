@@ -27,7 +27,7 @@ import Testing
 
 /// 偽の取り込みの開始のしかた。
 private enum StartBehavior {
-  case succeed, fail
+  case succeed, fail, failUnknown
   case succeedAfter(Duration)
   case waitForRelease
   case interruptBeforeReturn
@@ -85,7 +85,8 @@ private enum StartBehavior {
     let writer = try FakeWriter(url: file)
     switch behavior {
     case .succeed: break
-    case .fail: throw RecordingProblem.captureFailed
+    case .fail: throw RecordingProblem.captureFailed(.noInputDevice)
+    case .failUnknown: throw CocoaError(.fileWriteUnknown)
     case .succeedAfter(let delay): try await Task.sleep(for: delay)
     case .waitForRelease: await withCheckedContinuation { release = $0 }
     case .interruptBeforeReturn: onInterrupt(.interrupted)
@@ -220,9 +221,22 @@ private func exists(_ url: URL) -> Bool {
 
     await recorder.start()
 
-    #expect(harness.reports == [.captureFailed])
+    #expect(harness.reports == [.captureFailed(.noInputDevice)])
     #expect(try harness.meetingFolders().isEmpty)
     #expect(try recordingAssertions().isEmpty)
+    #expect(recorder.state == .idle)
+  }
+
+  @Test func captureErrorWithoutKindReportsStartFailed() async throws {
+    let harness = try Harness()
+    defer { harness.remove() }
+    harness.behavior = .failUnknown
+    let recorder = try harness.recorder()
+
+    await recorder.start()
+
+    #expect(harness.reports == [.captureFailed(.failed(step: "start", type: "capture_failed"))])
+    #expect(try harness.meetingFolders().isEmpty)
     #expect(recorder.state == .idle)
   }
 
@@ -234,13 +248,13 @@ private func exists(_ url: URL) -> Bool {
 
     await recorder.start()
 
-    #expect(harness.reports == [.captureFailed])
+    #expect(harness.reports == [.captureFailed(.failed(step: "start", type: "timeout"))])
     #expect(try harness.meetingFolders().isEmpty)
     #expect(try recordingAssertions().isEmpty)
     #expect(recorder.state == .idle)
     try await waitUntil { harness.stopCalls == 1 }
     #expect(harness.stopCalls == 1, "遅れて始まった取り込みを止める")
-    #expect(harness.reports == [.captureFailed])
+    #expect(harness.reports == [.captureFailed(.failed(step: "start", type: "timeout"))])
   }
 
   @Test func interruptionKeepsFileAndReturnsToIdle() async throws {

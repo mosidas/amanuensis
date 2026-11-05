@@ -9,8 +9,8 @@ enum Permission: CaseIterable, Equatable {
 
 enum RecordingProblem: Error, Equatable {
   case missingPermissions([Permission])
-  case folderMissing, folderNotWritable, captureFailed, interrupted, writeFailed, saveFailed,
-    discardFailed
+  case captureFailed(StartFailure)
+  case folderMissing, folderNotWritable, interrupted, writeFailed, saveFailed, discardFailed
 }
 
 /// 録音の保存先。会議ごとのフォルダーをこの下に作る。

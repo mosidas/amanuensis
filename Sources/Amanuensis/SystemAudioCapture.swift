@@ -76,13 +76,31 @@ enum SystemAudioAccess {
   try await openCapture(file: file, onInterrupt: onInterrupt)
 }
 
-private struct StartFailure: Error {
-  let step: StaticString
-  let type: String
+/// 取り込みを始められなかった理由。ログの step と error.type はここから決まる。
+enum StartFailure: Error, Equatable {
+  case noInputDevice
+  /// `name` はデバイス名を読めなかったときに nil。
+  case unsupportedInput(name: String?, channels: Int)
+  case failed(step: String, type: String)
+
+  var step: String {
+    switch self {
+    case .noInputDevice, .unsupportedInput: "find_microphone"
+    case .failed(let step, _): step
+    }
+  }
+
+  var type: String {
+    switch self {
+    case .noInputDevice: "no_input_device"
+    case .unsupportedInput: "unsupported_format"
+    case .failed(_, let type): type
+    }
+  }
 }
 
-private func check(_ status: OSStatus, _ step: StaticString) throws(StartFailure) {
-  if status != noErr { throw StartFailure(step: step, type: String(status)) }
+private func check(_ status: OSStatus, _ step: String) throws(StartFailure) {
+  if status != noErr { throw .failed(step: step, type: String(status)) }
 }
 
 // IOProc とリスナーの block を MainActor の文脈で作ると、HAL のスレッドから呼ばれた時点で異常終了する(実測)。
@@ -100,7 +118,7 @@ nonisolated private func openCapture(
       "capture failed step=\(error.step, privacy: .public) error.type=\(error.type, privacy: .public) app.error.origin=system"
     )
     pipe.teardown.run()
-    throw RecordingProblem.captureFailed
+    throw RecordingProblem.captureFailed(error)
   }
   let startMilliseconds = Int((ContinuousClock.now - begin) / .milliseconds(1))
   logger.info(
@@ -139,7 +157,7 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
   try check(read(tap, kAudioTapPropertyFormat, into: &tapDescription), "create_tap")
   guard let tapUID = tapUID?.takeRetainedValue(),
     let systemFormat = AVAudioFormat(streamDescription: &tapDescription)
-  else { throw StartFailure(step: "create_tap", type: "unsupported_format") }
+  else { throw .failed(step: "create_tap", type: "unsupported_format") }
 
   let aggregateDescription: [String: Any] = [
     kAudioAggregateDeviceNameKey: "amanuensis",
@@ -159,9 +177,7 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
   var microphone = AudioObjectID(kAudioObjectUnknown)
   try check(
     read(system, kAudioHardwarePropertyDefaultInputDevice, into: &microphone), "find_microphone")
-  guard microphone != kAudioObjectUnknown else {
-    throw StartFailure(step: "find_microphone", type: "no_input_device")
-  }
+  guard microphone != kAudioObjectUnknown else { throw .noInputDevice }
   let microphoneFormat = try inputFormat(of: microphone)
 
   let devices = [
@@ -175,7 +191,7 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
       AudioDeviceCreateIOProcIDWithBlock(
         &proc, device, pipe.ioQueue, pipe.ioBlock(for: source, format: format)),
       "create_ioproc")
-    guard let proc else { throw StartFailure(step: "create_ioproc", type: "no_ioproc") }
+    guard let proc else { throw .failed(step: "create_ioproc", type: "no_ioproc") }
     pipe.teardown.add { stopCheck(AudioDeviceDestroyIOProcID(device, proc), "destroy") }
     procs.append(proc)
   }
@@ -210,15 +226,20 @@ nonisolated private func inputFormat(of device: AudioObjectID) throws(StartFailu
     repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioStreamID>.size)
   try check(
     AudioObjectGetPropertyData(device, &address, 0, nil, &size, &streams), "find_microphone")
-  guard let stream = streams.first else {
-    throw StartFailure(step: "find_microphone", type: "no_input_device")
-  }
+  guard let stream = streams.first else { throw .noInputDevice }
   var description = AudioStreamBasicDescription()
   try check(read(stream, kAudioStreamPropertyVirtualFormat, into: &description), "find_microphone")
   guard let format = inputFormat(from: description) else {
-    throw StartFailure(step: "find_microphone", type: "unsupported_format")
+    throw .unsupportedInput(name: deviceName(device), channels: Int(description.mChannelsPerFrame))
   }
   return format
+}
+
+/// デバイスの表示名。読めなければ nil。
+private func deviceName(_ device: AudioObjectID) -> String? {
+  var name: Unmanaged<CFString>?
+  guard read(device, kAudioObjectPropertyName, into: &name) == noErr, let name else { return nil }
+  return name.takeRetainedValue() as String
 }
 
 /// 入力ストリームの ASBD から形式を作る。作れなければ nil を返す。
