@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Testing
 
 @testable import Amanuensis
@@ -140,10 +140,59 @@ private struct MenuRow {
 }
 
 @Test @MainActor func iconShowsRecording() async throws {
-  #expect(MenuContent.iconName(for: .idle) == "waveform")
-  #expect(MenuContent.accessibilityName(for: .idle) == "amanuensis")
+  let idle = MenuBar.icon(for: .idle, resources: repoResources)
+  #expect(idle.isTemplate)
+  #expect(idle.representations.contains { $0 is NSPDFImageRep }, "待機時は羽根ペンの PDF")
+  #expect(idle.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    #expect(MenuContent.iconName(for: state) == "record.circle")
-    #expect(MenuContent.accessibilityName(for: state) == "amanuensis(録音中)")
+    let recording = MenuBar.icon(for: state, resources: repoResources)
+    #expect(recording.isTemplate)
+    #expect(!recording.representations.contains { $0 is NSPDFImageRep }, "録音中は待機時の PDF でない")
+    let bitmaps = recording.representations.compactMap { $0 as? NSBitmapImageRep }
+    #expect(Set(bitmaps.map(\.pixelsWide)) == [18, 36], "録音中は @1x と @2x のビットマップ")
+    for rep in bitmaps {
+      // SVG の座標(左上が原点、18pt)。半径 8.5 の円から 0.92 倍の羽根ペンを抜いた形。
+      let scale = Double(rep.pixelsWide) / 18
+      func alpha(_ x: Double, _ y: Double) -> CGFloat? {
+        rep.colorAt(x: Int(x * scale), y: Int(y * scale))?.alphaComponent
+      }
+      #expect(alpha(0, 0) == 0, "\(rep.pixelsWide)px: 角は円の外")
+      #expect(alpha(4, 5) == 1, "\(rep.pixelsWide)px: 円の内で羽根ペンの外は塗る")
+      #expect(alpha(10.4, 6.8) == 0, "\(rep.pixelsWide)px: 羽は抜く")
+      #expect(alpha(11, 15.4) == 1, "\(rep.pixelsWide)px: 下線は抜かない")
+    }
+    let pixels = try #require(recording.tiffRepresentation)
+    #expect(pixels != symbolPixels("record.circle"), "録音中は record.circle でない")
+    #expect(pixels != symbolPixels("waveform"), "録音中は読めないときの waveform とも違う")
+    #expect(recording.accessibilityDescription == "amanuensis(録音中)")
   }
 }
+
+@Test @MainActor func iconFallsBackWithoutPDF() async throws {
+  let empty = FileManager.default.temporaryDirectory.appending(
+    path: "RecordingTextTests-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: empty) }
+  let image = MenuBar.icon(for: .idle, resources: empty)
+  #expect(image.isTemplate)
+  #expect(!image.representations.contains { $0 is NSPDFImageRep }, "PDF が無ければ SF Symbol")
+  #expect(image.accessibilityDescription == "amanuensis")
+  try await withRecording { state, _ in
+    let recording = MenuBar.icon(for: state, resources: empty)
+    #expect(recording.isTemplate)
+    #expect(
+      !recording.representations.contains {
+        [18, 36].contains(($0 as? NSBitmapImageRep)?.pixelsWide)
+      },
+      "TIFF が無ければ録音中も SF Symbol")
+    #expect(recording.accessibilityDescription == "amanuensis(録音中)")
+  }
+}
+
+private func symbolPixels(_ name: String) -> Data? {
+  NSImage(systemSymbolName: name, accessibilityDescription: nil)?.tiffRepresentation
+}
+
+private let repoResources = URL(filePath: #filePath)
+  .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+  .appending(path: "Resources")
