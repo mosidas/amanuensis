@@ -166,17 +166,6 @@ private func samples(of url: URL) throws -> (values: [Float], rate: Double, chan
   #expect(duration == 0)
 }
 
-/// 偽の `speech` を `runtime/speech` に置いた `SpeechInstallation`。偽の speech は引数を `runtime/args` に書く。
-private func fakeInstallation(_ body: String) throws -> SpeechInstallation {
-  let (executable, directory) = try fakeSpeech(
-    #"printf '%s\n' "$@" > "$(dirname "$0")/args""# + "\n" + body)
-  let installation = SpeechInstallation(directory: directory)
-  try FileManager.default.createDirectory(
-    at: installation.runtimeDirectory, withIntermediateDirectories: true)
-  try FileManager.default.moveItem(at: executable, to: installation.executable)
-  return installation
-}
-
 /// `.wav` の引数ごとに、区間の 1 秒と 4 秒から始まる語 2 つ(間隔 2.5 秒で別の段落)を出す。
 private let twoWordsPerChunk = #"""
   for a in "$@"; do

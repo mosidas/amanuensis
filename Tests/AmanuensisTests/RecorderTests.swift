@@ -5,7 +5,7 @@ import Testing
 @testable import Amanuensis
 
 /// 偽の取り込みの書き手。`CaptureSession.stop` から MainActor へ渡って閉じる。
-@MainActor private final class FakeWriter {
+@MainActor final class FakeWriter {
   let writer: StereoRecordingWriter
 
   init(url: URL) throws {
@@ -34,7 +34,7 @@ private enum StartBehavior {
   case stopFails
 }
 
-/// 一時ディレクトリの保存先、専用の UserDefaults の suite、偽の取り込み、報告の記録。
+/// 一時ディレクトリの保存先、専用の UserDefaults の suite、偽の取り込み、報告と保存の記録。
 @MainActor private final class Harness {
   let suiteName = "RecorderTests-\(UUID().uuidString)"
   let directory = FileManager.default.temporaryDirectory.appending(
@@ -43,6 +43,7 @@ private enum StartBehavior {
   var missing: [Permission] = []
   var behavior = StartBehavior.succeed
   private(set) var reports: [RecordingProblem] = []
+  private(set) var saved: [URL] = []
   private(set) var captureCalls = 0
   private(set) var stopCalls = 0
   private(set) var onInterrupt: (@Sendable (RecordingProblem) -> Void)?
@@ -60,7 +61,8 @@ private enum StartBehavior {
     return Recorder(
       folder: folder, missingPermissions: { [missing] in missing },
       startCapture: { [unowned self] in try await startCapture(file: $0, onInterrupt: $1) },
-      report: { [unowned self] in reports.append($0) }, startTimeout: startTimeout)
+      report: { [unowned self] in reports.append($0) },
+      saved: { [unowned self] in saved.append($0) }, startTimeout: startTimeout)
   }
 
   func releaseStart() {
@@ -192,6 +194,7 @@ private func exists(_ url: URL) -> Bool {
     #expect(audio.fileFormat.channelCount == 2)
     #expect(audio.length > 0)
     #expect(harness.reports.isEmpty)
+    #expect(harness.saved == [recording.folder], "保存した会議フォルダーを 1 回知らせる")
   }
 
   @Test func discardRemovesMeetingFolder() async throws {
@@ -211,6 +214,7 @@ private func exists(_ url: URL) -> Bool {
     #expect(try recordingAssertions().isEmpty)
     #expect(recorder.state == .idle)
     #expect(harness.reports.isEmpty)
+    #expect(harness.saved.isEmpty, "破棄した録音は知らせない")
   }
 
   @Test func captureFailureRemovesMeetingFolder() async throws {
@@ -274,6 +278,7 @@ private func exists(_ url: URL) -> Bool {
     #expect(harness.reports == [.interrupted])
     #expect(exists(recording.folder.appending(path: "recording.caf")), "途中までの音声を残す")
     #expect(try recordingAssertions().isEmpty)
+    #expect(harness.saved == [recording.folder], "途中で止まった録音も知らせる")
   }
 
   @Test func startWhileStartingDoesNothing() async throws {
@@ -324,6 +329,7 @@ private func exists(_ url: URL) -> Bool {
     #expect(harness.reports == [.saveFailed])
     #expect(recorder.state == .idle)
     #expect(try recordingAssertions().isEmpty)
+    #expect(harness.saved.isEmpty, "保存できなかった録音は知らせない")
   }
 
   @Test func discardFailureReportsDiscardFailedAndReturnsToIdle() async throws {

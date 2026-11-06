@@ -162,7 +162,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
     folder: RecordingFolder(
       defaults: try #require(UserDefaults(suiteName: suiteName)), standardRoot: directory),
     missingPermissions: { [] }, startCapture: { _, _ in CaptureSession(stop: { 0 }) },
-    report: { Issue.record("録音を開始できる: \($0)") })
+    report: { Issue.record("録音を開始できる: \($0)") }, saved: { _ in })
   await recorder.start()
   guard case .recording(let recording) = recorder.state else {
     Issue.record("録音中になる")

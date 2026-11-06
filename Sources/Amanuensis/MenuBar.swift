@@ -5,6 +5,8 @@ import UserNotifications
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "menubar")
 
+enum NotificationFailure: Error { case denied, failed }
+
 /// メニューバーのアイコンとメニュー。録音の状態が変わるたびに `MenuContent` から作り直す。
 @MainActor
 final class MenuBar: NSObject {
@@ -63,26 +65,36 @@ final class MenuBar: NSObject {
       }
       return
     }
-    // UNUserNotificationCenter.current() はアプリのバンドルの外(swift run・テスト)で落ちる。
-    guard Bundle.main.bundleIdentifier != nil else {
-      alert(problem, buttons: ["閉じる"])
-      return
-    }
     Task {
-      let center = UNUserNotificationCenter.current()
-      do {
-        guard try await center.requestAuthorization(options: [.alert, .sound]) else {
-          alert(problem, buttons: ["閉じる"])
-          return
-        }
-        let content = UNMutableNotificationContent()
-        content.title = RecordingText.title(for: problem)
-        content.body = RecordingText.body(for: problem)
-        try await center.add(
-          UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+      do throws(NotificationFailure) {
+        try await notify(
+          title: RecordingText.title(for: problem), body: RecordingText.body(for: problem))
       } catch {
         alert(problem, buttons: ["閉じる"])
       }
+    }
+  }
+
+  /// 通知を出す。通知が許可されていなければ `.denied`、バンドルの外・確認や追加の失敗では `.failed` を投げる。
+  static func notify(title: String, body: String) async throws(NotificationFailure) {
+    // UNUserNotificationCenter.current() はアプリのバンドルの外(swift run・テスト)で落ちる。
+    guard Bundle.main.bundleIdentifier != nil else { throw .failed }
+    let center = UNUserNotificationCenter.current()
+    let granted: Bool
+    do {
+      granted = try await center.requestAuthorization(options: [.alert, .sound])
+    } catch {
+      throw .failed
+    }
+    guard granted else { throw .denied }
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.body = body
+    do {
+      try await center.add(
+        UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    } catch {
+      throw .failed
     }
   }
 

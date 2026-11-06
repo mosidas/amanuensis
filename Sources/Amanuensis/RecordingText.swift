@@ -48,7 +48,7 @@ enum RecordingText {
     }
   }
 
-  private static let issuesURL = "https://github.com/mosidas/amanuensis/issues"
+  static let issuesURL = "https://github.com/mosidas/amanuensis/issues"
 
   /// 主ボタンの名前。押せる操作が無い失敗では nil。
   static func action(for problem: RecordingProblem) -> String? {

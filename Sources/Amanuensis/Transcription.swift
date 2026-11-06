@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "transcription")
@@ -89,3 +90,119 @@ func transcribe(meeting: URL, installation: SpeechInstallation) async throws(Tra
     "transcription finished folder.name=\(name, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public)"
   )
 }
+
+/// 利用者に通知する文字起こしの結果。`meeting` は会議フォルダーの名前。
+enum TranscriptionNotice: Equatable {
+  case finished(meeting: String)
+  case autoOff(meeting: String)
+  case setupRequired(meeting: String)
+  case failed(TranscriptionFailure, meeting: String)
+}
+
+/// 録音を停止したら自動で文字起こしするかの設定。
+struct TranscriptionSetting {
+  private static let key = "transcribeAfterRecording"
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  /// 保存値が Bool でなければ(`defaults write` で壊された値を含む)既定のオン。
+  var autoTranscribe: Bool { defaults.object(forKey: Self.key) as? Bool ?? true }
+
+  func setAutoTranscribe(_ autoTranscribe: Bool) {
+    defaults.set(autoTranscribe, forKey: Self.key)
+  }
+}
+
+/// 文字起こしの待ち行列を持つ。状態の持ち主はこの型だけである。speech は同時に 1 つだけ動かす。
+// shortcut: 待ち行列と未取得の待ちはメモリだけ(アプリの終了で消える), R5 の一覧の手動実行で足りなければ永続化する
+@MainActor @Observable final class Transcriber {
+  /// 先頭が文字起こし中の会議フォルダー。
+  private(set) var queue: [URL] = []
+  /// ランタイムかモデルが未取得で待たせている会議フォルダー。
+  private var awaitingSetup: [URL] = []
+  private let installation: SpeechInstallation
+  private let setting: TranscriptionSetting
+  private let transcribe: (URL, SpeechInstallation) async throws(TranscriptionFailure) -> Void
+  private let notify: @MainActor (TranscriptionNotice) -> Void
+
+  init(
+    installation: SpeechInstallation, setting: TranscriptionSetting,
+    transcribe: @escaping (URL, SpeechInstallation) async throws(TranscriptionFailure) -> Void,
+    notify: @escaping @MainActor (TranscriptionNotice) -> Void
+  ) {
+    self.installation = installation
+    self.setting = setting
+    self.transcribe = transcribe
+    self.notify = notify
+  }
+
+  var current: URL? { queue.first }
+
+  /// 録音が保存されたとき。自動がオンなら文字起こしを待ち行列に入れる。
+  func recordingSaved(_ meeting: URL) {
+    guard setting.autoTranscribe else {
+      logger.info(
+        "transcription skipped reason=auto_off folder.name=\(meeting.lastPathComponent, privacy: .public)"
+      )
+      notify(.autoOff(meeting: meeting.lastPathComponent))
+      return
+    }
+    enqueue(meeting)
+  }
+
+  /// ランタイムとモデルの取得・動作確認の後。取得済みなら未取得で待たせた録音を文字起こしする。
+  func resumeAfterSetup() {
+    guard installation.isInstalled else { return }
+    let waiting = awaitingSetup
+    awaitingSetup = []
+    waiting.forEach(enqueue)
+  }
+
+  private func enqueue(_ meeting: URL) {
+    guard installation.isInstalled else {
+      awaitingSetup.append(meeting)
+      logger.info(
+        "transcription deferred reason=not_installed folder.name=\(meeting.lastPathComponent, privacy: .public)"
+      )
+      notify(.setupRequired(meeting: meeting.lastPathComponent))
+      return
+    }
+    queue.append(meeting)
+    if queue.count == 1 { Task { await drain() } }
+  }
+
+  private func drain() async {
+    while let meeting = queue.first {
+      do {
+        try await transcribe(meeting, installation)
+        notify(.finished(meeting: meeting.lastPathComponent))
+      } catch {
+        notify(.failed(error, meeting: meeting.lastPathComponent))
+      }
+      queue.removeFirst()
+    }
+  }
+}
+
+// main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
+@MainActor let transcriber = Transcriber(
+  installation: .standard, setting: TranscriptionSetting(),
+  transcribe: { meeting, installation async throws(TranscriptionFailure) in
+    try await transcribe(meeting: meeting, installation: installation)
+  },
+  notify: { notice in
+    // 会議中にモーダルを出さないよう、出せなくても警告に逃がさない。
+    Task {
+      do throws(NotificationFailure) {
+        try await MenuBar.notify(
+          title: TranscriptionText.title(for: notice), body: TranscriptionText.body(for: notice))
+      } catch {
+        logger.warning(
+          "transcription notification failed error.type=notification_failed app.error.origin=system"
+        )
+      }
+    }
+  })

@@ -45,8 +45,10 @@ private struct SettingsView: View {
             case .reinstall: await speechSetup.reinstall()
             case .check: await speechSetup.check()
             }
+            transcriber.resumeAfterSetup()
           }
         }
+        TranscriptionSettingsView(setting: TranscriptionSetting())
       }
     }
     .formStyle(.grouped)
