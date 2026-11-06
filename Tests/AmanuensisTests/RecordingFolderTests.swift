@@ -138,3 +138,20 @@ func brokenStoredValueFallsBackToStandardRoot(name: String) throws {
 
   #expect(sandbox.folder(standardRoot: standardRoot).root.path == standardRoot.path)
 }
+
+@Test func meetingDateAcceptsOnlyCanonicalNames() throws {
+  let date = try #require(RecordingFolder.meetingDate(named: "2026-11-06_101500"))
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = .current
+  let parts = calendar.dateComponents(
+    [.year, .month, .day, .hour, .minute, .second], from: date)
+  #expect(
+    parts
+      == DateComponents(year: 2026, month: 11, day: 6, hour: 10, minute: 15, second: 0))
+  for name in [
+    "2026-1-6_101500", "2026-11-06_101500 ", "2026-11-06_10150０", "2026-11-06_1015",
+    "2026-13-06_101500",
+  ] {
+    #expect(RecordingFolder.meetingDate(named: name) == nil, "\(name) は形式から外れる")
+  }
+}

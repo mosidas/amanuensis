@@ -149,7 +149,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
 }
 
 /// 録音中の Recorder を作って `body` に渡し、終わったら止めて保存先を消す。
-@MainActor private func withRecording(_ body: (RecorderState, Date) throws -> Void) async throws {
+@MainActor func withRecording(_ body: (RecorderState, Date) throws -> Void) async throws {
   let directory = FileManager.default.temporaryDirectory.appending(
     path: "RecordingTextTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -162,7 +162,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
     folder: RecordingFolder(
       defaults: try #require(UserDefaults(suiteName: suiteName)), standardRoot: directory),
     missingPermissions: { [] }, startCapture: { _, _ in CaptureSession(stop: { 0 }) },
-    report: { Issue.record("録音を開始できる: \($0)") })
+    report: { Issue.record("録音を開始できる: \($0)") }, saved: { _ in })
   await recorder.start()
   guard case .recording(let recording) = recorder.state else {
     Issue.record("録音中になる")
@@ -182,42 +182,45 @@ private struct MenuRow {
 }
 
 @Test @MainActor func menuMatchesTable() async throws {
+  let recordings = MenuContent.Entry.item("録音の一覧…", .recordings)
   let settings = MenuContent.Entry.item("設定…", .settings)
   let quit = MenuContent.Entry.item("amanuensis を終了", .quit)
   let rows = [
     MenuRow(
-      name: "idle", state: .idle, entries: [.item("録音を開始", .start), settings, .separator, quit]),
+      name: "idle", state: .idle,
+      entries: [.item("録音を開始", .start), recordings, settings, .separator, quit]),
     MenuRow(
       name: "starting", state: .starting,
-      entries: [.item("録音を準備しています…", nil), settings, .separator, quit]),
+      entries: [.item("録音を準備しています…", nil), recordings, settings, .separator, quit]),
     MenuRow(
       name: "recording-12s", state: nil, elapsed: 12,
       entries: [
-        .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), settings,
+        .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), recordings, settings,
         .separator, quit,
       ]),
     MenuRow(
       name: "recording-3725s", state: nil, elapsed: 3_725.9,
       entries: [
-        .item("録音中 1:02:05", nil), .item("停止", .stop), .item("破棄…", .discard), settings,
+        .item("録音中 1:02:05", nil), .item("停止", .stop), .item("破棄…", .discard), recordings, settings,
         .separator, quit,
       ]),
     MenuRow(
       name: "finishing", state: .finishing,
-      entries: [.item("録音を保存しています…", nil), settings, .separator, quit]),
+      entries: [.item("録音を保存しています…", nil), recordings, settings, .separator, quit]),
     MenuRow(
       name: "idle-blocked-microphone", state: .idle, blockedBy: [.microphone],
       entries: [
         .item("録音を開始", .start), .separator, .item("会議の検知を停止しています", nil),
         .item("マイクの使用が許可されていません", nil), .item("システム設定を開く", .systemSettings(.microphone)),
-        .separator, settings, .separator, quit,
+        .separator, recordings, settings, .separator, quit,
       ]),
     MenuRow(
       name: "idle-blocked-system-audio", state: .idle, blockedBy: [.systemAudio],
       entries: [
         .item("録音を開始", .start), .separator, .item("会議の検知を停止しています", nil),
         .item("システム音声の録音が許可されていません", nil),
-        .item("システム設定を開く", .systemSettings(.systemAudio)), .separator, settings, .separator,
+        .item("システム設定を開く", .systemSettings(.systemAudio)), .separator, recordings, settings,
+        .separator,
         quit,
       ]),
     MenuRow(
@@ -226,7 +229,8 @@ private struct MenuRow {
       entries: [
         .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), .separator,
         .item("会議の検知を停止しています", nil), .item("マイクとシステム音声の録音が許可されていません", nil),
-        .item("システム設定を開く", .systemSettings(.microphone)), .separator, settings, .separator,
+        .item("システム設定を開く", .systemSettings(.microphone)), .separator, recordings, settings,
+        .separator,
         quit,
       ]),
   ]
@@ -247,12 +251,12 @@ private struct MenuRow {
 }
 
 @Test @MainActor func iconShowsRecording() async throws {
-  let idle = MenuBar.icon(for: .idle, resources: repoResources)
+  let idle = MenuBar.icon(for: .idle, transcribing: false, resources: repoResources)
   #expect(idle.isTemplate)
   #expect(idle.representations.contains { $0 is NSPDFImageRep }, "待機時は羽根ペンの PDF")
   #expect(idle.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    let recording = MenuBar.icon(for: state, resources: repoResources)
+    let recording = MenuBar.icon(for: state, transcribing: false, resources: repoResources)
     #expect(recording.isTemplate)
     #expect(!recording.representations.contains { $0 is NSPDFImageRep }, "録音中は待機時の PDF でない")
     let bitmaps = recording.representations.compactMap { $0 as? NSBitmapImageRep }
@@ -275,17 +279,32 @@ private struct MenuRow {
   }
 }
 
+@Test @MainActor func iconShowsTranscribing() async throws {
+  let transcribing = MenuBar.icon(for: .idle, transcribing: true, resources: repoResources)
+  #expect(transcribing.isTemplate)
+  #expect(
+    !transcribing.representations.contains { $0 is NSPDFImageRep }, "文字起こし中は待機時の PDF でない")
+  #expect(transcribing.tiffRepresentation == symbolPixels("pencil.and.scribble"))
+  #expect(transcribing.accessibilityDescription == "amanuensis(文字起こし中)")
+  try await withRecording { state, _ in
+    let recording = MenuBar.icon(for: state, transcribing: true, resources: repoResources)
+    let bitmaps = recording.representations.compactMap { $0 as? NSBitmapImageRep }
+    #expect(Set(bitmaps.map(\.pixelsWide)) == [18, 36], "録音中は文字起こし中でも録音の TIFF")
+    #expect(recording.accessibilityDescription == "amanuensis(録音中)")
+  }
+}
+
 @Test @MainActor func iconFallsBackWithoutPDF() async throws {
   let empty = FileManager.default.temporaryDirectory.appending(
     path: "RecordingTextTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: empty) }
-  let image = MenuBar.icon(for: .idle, resources: empty)
+  let image = MenuBar.icon(for: .idle, transcribing: false, resources: empty)
   #expect(image.isTemplate)
   #expect(!image.representations.contains { $0 is NSPDFImageRep }, "PDF が無ければ SF Symbol")
   #expect(image.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    let recording = MenuBar.icon(for: state, resources: empty)
+    let recording = MenuBar.icon(for: state, transcribing: false, resources: empty)
     #expect(recording.isTemplate)
     #expect(
       !recording.representations.contains {

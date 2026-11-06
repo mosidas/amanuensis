@@ -35,7 +35,12 @@ enum SpeechSettingsText {
       .init(
         title: "音声認識モデルは未取得です",
         body:
-          "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount)) です。",
+          "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount + RemoteFile.nemotronDiarization.byteCount)) です。",
+        isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
+    case .diarizationModelMissing:
+      .init(
+        title: "話者分離のモデルは未取得です",
+        body: "話者を分けるときに使います。ダウンロードの容量は \(bytes(RemoteFile.nemotronDiarization.byteCount)) です。",
         isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
     case .downloading(let received, let total):
       .init(
@@ -149,7 +154,7 @@ struct SpeechSettingsView: View {
 }
 
 /// 見出しと本文。失敗は色だけに頼らず印のアイコンでも示す。
-private struct Message: View {
+struct Message: View {
   let title: String
   let detail: String?
   let isFailure: Bool

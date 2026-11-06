@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    # ランナーのアーキテクチャ(Apple Silicon)向けにビルドする。アドホック署名のみで公証していない。
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    # 4 リポジトリ(launchpad-lite・rename・nullops・lazy-finder)の既存 run の実測 1〜4 分の約 5 倍。
+    timeout-minutes: 20
+
+    steps:
+      - name: Check tag
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=タグの形式::タグは vX.Y.Z の形で付ける(例: v1.2.3): $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Test
+        run: scripts/test.sh
+
+      - name: Build application
+        run: scripts/bundle.sh "$GITHUB_REF_NAME"
+
+      - name: Verify app
+        shell: bash
+        run: |
+          codesign --verify --strict dist/Amanuensis.app || { echo "::error title=成果物の検証::署名の検証に失敗した"; exit 1; }
+          actual="$(plutil -extract CFBundleShortVersionString raw dist/Amanuensis.app/Contents/Info.plist)"
+          if [[ "$actual" != "${GITHUB_REF_NAME#v}" ]]; then
+            echo "::error title=成果物の検証::Info.plist のバージョン $actual がタグ $GITHUB_REF_NAME と一致しない"
+            exit 1
+          fi
+
+      - name: Create zip
+        run: ditto -c -k --keepParent dist/Amanuensis.app "dist/Amanuensis-$GITHUB_REF_NAME.zip"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            dist/Amanuensis-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

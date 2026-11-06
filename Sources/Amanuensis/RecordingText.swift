@@ -48,7 +48,7 @@ enum RecordingText {
     }
   }
 
-  private static let issuesURL = "https://github.com/mosidas/amanuensis/issues"
+  static let issuesURL = "https://github.com/mosidas/amanuensis/issues"
 
   /// 主ボタンの名前。押せる操作が無い失敗では nil。
   static func action(for problem: RecordingProblem) -> String? {
@@ -79,7 +79,7 @@ extension Permission {
 /// メニューバーのメニューとアイコン。録音の状態と会議の検知を止めている権限から一意に決まる。
 enum MenuContent {
   enum Action: Equatable {
-    case start, stop, discard, settings, quit
+    case start, stop, discard, recordings, settings, quit
     /// システム設定のこの権限の画面を開く。
     case systemSettings(Permission)
   }
@@ -116,12 +116,19 @@ enum MenuContent {
         []
       }
     return head + detection + [
-      .item("設定…", .settings), .separator, .item("amanuensis を終了", .quit),
+      .item("録音の一覧…", .recordings), .item("設定…", .settings), .separator,
+      .item("amanuensis を終了", .quit),
     ]
   }
 
-  static func accessibilityName(for state: RecorderState) -> String {
-    if case .recording = state { "amanuensis(録音中)" } else { "amanuensis" }
+  static func accessibilityName(for state: RecorderState, transcribing: Bool) -> String {
+    if case .recording = state {
+      "amanuensis(録音中)"
+    } else if transcribing {
+      "amanuensis(文字起こし中)"
+    } else {
+      "amanuensis"
+    }
   }
 
   private static func elapsed(from start: Date, to now: Date) -> String {

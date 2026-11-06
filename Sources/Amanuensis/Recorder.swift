@@ -32,12 +32,14 @@ enum RecorderState: Equatable {
 }
 
 /// 録音の状態を持つ。状態の持ち主はこの型だけである。失敗は経路ごとに 1 回だけ `report` へ渡す。
+/// 停止か途中で止まって閉じた録音の会議フォルダーは 1 回だけ `saved` へ渡す。
 @MainActor @Observable final class Recorder {
   private(set) var state = RecorderState.idle
   private let folder: RecordingFolder
   private let missingPermissions: () async -> [Permission]
   private let startCapture: StartCapture
   private let report: @MainActor (RecordingProblem) -> Void
+  private let saved: @MainActor (URL) -> Void
   private let startTimeout: Duration
   /// 準備中の会議フォルダー。準備中に届いた中断を、この会議のものか見分ける。
   private var startingMeeting: URL?
@@ -48,6 +50,7 @@ enum RecorderState: Equatable {
     folder: RecordingFolder, missingPermissions: @escaping () async -> [Permission],
     startCapture: @escaping StartCapture,
     report: @escaping @MainActor (RecordingProblem) -> Void,
+    saved: @escaping @MainActor (URL) -> Void,
     // shortcut: 10 秒は実測 2 回(tap の作成 0.07 秒・開始 0.0002 秒、macOS 26.6)からの仮の値, capture started の start_ms を 20 回分集めたら p99.9 で決め直す
     startTimeout: Duration = .seconds(10)
   ) {
@@ -55,6 +58,7 @@ enum RecorderState: Equatable {
     self.missingPermissions = missingPermissions
     self.startCapture = startCapture
     self.report = report
+    self.saved = saved
     self.startTimeout = startTimeout
   }
 
@@ -130,7 +134,7 @@ enum RecorderState: Equatable {
   /// 録音中のときだけ取り込みを止めてファイルを閉じる。
   func stop() async {
     guard case .recording(let recording) = state else { return }
-    if await finish(recording) == nil { report(.saveFailed) }
+    if await finish(recording) == nil { report(.saveFailed) } else { saved(recording.folder) }
   }
 
   /// 録音中のときだけ取り込みを止め、会議フォルダーを消す。
@@ -172,6 +176,7 @@ enum RecorderState: Equatable {
   }
 
   /// 外殻が取り込みが止まったと伝えたとき。止まった録音がまだ録音中のときだけ待機中へ戻す。
+  /// 外殻は書いた分を閉じてから伝えるので、録音中だった会議フォルダーを `saved` へ渡す。
   /// 準備中なら覚えておき、開始が戻った直後に `start` が処理する。
   private func interrupt(_ meeting: URL, _ problem: RecordingProblem) {
     if state == .starting, startingMeeting == meeting {
@@ -185,6 +190,7 @@ enum RecorderState: Equatable {
     ProcessInfo.processInfo.endActivity(recording.activity)
     state = .idle
     report(problem)
+    saved(meeting)
   }
 
   private func refuse(_ problem: RecordingProblem) {
@@ -273,4 +279,4 @@ extension RecordingProblem {
     try await startSystemAudioCapture(
       file: file, microphone: MicrophoneSetting().choice, onInterrupt: onInterrupt)
   },
-  report: MenuBar.present)
+  report: MenuBar.present, saved: { transcriber.recordingSaved($0) })

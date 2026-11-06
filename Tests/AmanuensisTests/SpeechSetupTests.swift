@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Observation
 import Testing
 
 @testable import Amanuensis
@@ -7,6 +8,9 @@ import Testing
 private let model = Data(repeating: 0x61, count: 300_000)
 // head -c 300000 /dev/zero | tr '\0' a | shasum -a 256
 private let modelSHA256 = "12e1b9b179b29a4f7e5889b185d7ac71bff0ad1f49a7b391d0911b737a0f5381"
+private let diarizationModel = Data(repeating: 0x64, count: 200_000)
+// head -c 200000 /dev/zero | tr '\0' d | shasum -a 256
+private let diarizationSHA256 = "1773e3d88f1c07379d2b92ba62930c3a90559ba0a265c793385a3971a71b75ac"
 
 /// `#!/bin/sh` の 1 行の実行ファイル `speech` を 1 つ持つ zip。
 private let runtime: Data = {
@@ -72,6 +76,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 private struct Harness {
   let runtimeURL = LocalFileURLProtocol.makeURL()
   let modelURL = LocalFileURLProtocol.makeURL()
+  let diarizationURL = LocalFileURLProtocol.makeURL()
   let installation: SpeechInstallation
   let session: URLSession = {
     let configuration = URLSessionConfiguration.ephemeral
@@ -81,7 +86,8 @@ private struct Harness {
 
   init(
     runtimeBody: Data = runtime, modelSHA256: String = modelSHA256,
-    modelStub: LocalFileURLProtocol.Stub = .init(body: model)
+    modelStub: LocalFileURLProtocol.Stub = .init(body: model),
+    diarizationSHA256: String = diarizationSHA256
   ) {
     var installation = SpeechInstallation(
       directory: FileManager.default.temporaryDirectory.appending(
@@ -91,9 +97,13 @@ private struct Harness {
       fileName: "runtime.zip")
     installation.model = RemoteFile(
       url: modelURL, byteCount: Int64(model.count), sha256: modelSHA256, fileName: "model.gguf")
+    installation.diarizationModel = RemoteFile(
+      url: diarizationURL, byteCount: Int64(diarizationModel.count), sha256: diarizationSHA256,
+      fileName: "diarization.gguf")
     self.installation = installation
     LocalFileURLProtocol.set(.init(body: runtimeBody), for: runtimeURL)
     LocalFileURLProtocol.set(modelStub, for: modelURL)
+    LocalFileURLProtocol.set(.init(body: diarizationModel), for: diarizationURL)
   }
 
   func makeSetup(
@@ -108,6 +118,49 @@ private struct Harness {
   func requestCount(_ url: URL) -> Int { LocalFileURLProtocol.receivedRanges(for: url).count }
 
   func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+}
+
+/// `setup.state` が置き換わるたびに、置き換わる前の値を記録する(`onChange` は値の変わる直前に同期で呼ばれる)。
+@MainActor
+private final class StateHistory {
+  private(set) var states: [SetupState] = []
+  private let setup: SpeechSetup
+
+  init(_ setup: SpeechSetup) {
+    self.setup = setup
+    track()
+  }
+
+  private func track() {
+    withObservationTracking {
+      _ = setup.state
+    } onChange: {
+      MainActor.assumeIsolated {
+        self.states.append(self.setup.state)
+        self.track()
+      }
+    }
+  }
+}
+
+@MainActor
+@Test func progressOfThreeFilesNeverGoesBackAndEndsWithVerifying() async throws {
+  let harness = Harness()
+  let setup = harness.makeSetup()
+  let history = StateHistory(setup)
+
+  await setup.download()
+  let states = history.states + [setup.state]
+
+  let received = states.compactMap {
+    if case .downloading(let receivedBytes, _) = $0 { receivedBytes } else { nil }
+  }
+  #expect(zip(received, received.dropFirst()).allSatisfy { $0 <= $1 }, "\(states)")
+  let verifying = try #require(states.firstIndex(of: .verifying), "\(states)")
+  #expect(
+    states[verifying...].allSatisfy {
+      if case .downloading = $0 { false } else { true }
+    }, "確認に入った後に取得へ戻らない: \(states)")
 }
 
 @MainActor
@@ -127,9 +180,10 @@ private struct Harness {
   #expect(getxattr(installation.executable.path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
   #expect(errno == ENOATTR, "展開したランタイムに quarantine の属性が付かない")
   #expect(try Data(contentsOf: installation.modelFile) == model)
+  #expect(try Data(contentsOf: installation.diarizationModelFile) == diarizationModel)
   #expect(
     try FileManager.default.contentsOfDirectory(atPath: installation.directory.path).sorted()
-      == ["model.gguf", "runtime"], "zip と .part と展開の一時ディレクトリが残らない")
+      == ["diarization.gguf", "model.gguf", "runtime"], "zip と .part と展開の一時ディレクトリが残らない")
 }
 
 @MainActor
@@ -144,10 +198,11 @@ private struct Harness {
     setup.state
       == .insufficientSpace(
         required: installation.runtime.byteCount + installation.runtimeExtractedByteCount
-          + installation.model.byteCount,
+          + installation.model.byteCount + installation.diarizationModel.byteCount,
         available: 1000))
   #expect(harness.requestCount(harness.runtimeURL) == 0)
   #expect(harness.requestCount(harness.modelURL) == 0)
+  #expect(harness.requestCount(harness.diarizationURL) == 0)
 }
 
 @MainActor
@@ -156,7 +211,7 @@ private struct Harness {
   let installation = harness.installation
   let required =
     installation.runtime.byteCount + installation.runtimeExtractedByteCount
-    + installation.model.byteCount
+    + installation.model.byteCount + installation.diarizationModel.byteCount
   let setup = harness.makeSetup(available: required)
 
   await setup.download()
@@ -164,6 +219,7 @@ private struct Harness {
   #expect(setup.state == .checked(.passed))
   #expect(harness.requestCount(harness.runtimeURL) == 1)
   #expect(harness.requestCount(harness.modelURL) == 1)
+  #expect(harness.requestCount(harness.diarizationURL) == 1)
 }
 
 @MainActor
@@ -181,7 +237,7 @@ private struct Harness {
     refused.state
       == .insufficientSpace(
         required: installation.runtime.byteCount + installation.runtimeExtractedByteCount
-          + installation.model.byteCount - 100_000,
+          + installation.model.byteCount + installation.diarizationModel.byteCount - 100_000,
         available: 1), "受けた分は必要量から引く")
 
   let setup = harness.makeSetup()
@@ -216,6 +272,58 @@ private struct Harness {
   #expect(setup.state == .failed(.checksumMismatch))
   #expect(!harness.exists(installation.modelFile))
   #expect(!harness.exists(installation.directory.appending(path: "model.gguf.part")))
+}
+
+@MainActor
+@Test func downloadsOnlyDiarizationModelWhenTranscriptionIsInstalled() async throws {
+  let harness = Harness()
+  let installation = harness.installation
+  await harness.makeSetup().download()
+  try FileManager.default.removeItem(at: installation.diarizationModelFile)
+  let stub = StubCheck()
+  let setup = harness.makeSetup(selfCheck: stub.run)
+
+  setup.refresh()
+  #expect(setup.state == .diarizationModelMissing, "音声認識は取得済みで話者分離のモデルだけが無い")
+  #expect(installation.isInstalled, "文字起こしは話者分離のモデルの有無に左右されない")
+
+  await setup.download()
+
+  #expect(setup.state == .checked(.passed))
+  #expect(harness.requestCount(harness.runtimeURL) == 1, "ランタイムを取り直さない")
+  #expect(harness.requestCount(harness.modelURL) == 1, "Haas を取り直さない")
+  #expect(harness.requestCount(harness.diarizationURL) == 2)
+  #expect(try Data(contentsOf: installation.diarizationModelFile) == diarizationModel)
+  #expect(stub.calls == 1)
+}
+
+@MainActor
+@Test func refusesDiarizationModelWhenSpaceIsInsufficient() async throws {
+  let harness = Harness()
+  let installation = harness.installation
+  await harness.makeSetup().download()
+  try FileManager.default.removeItem(at: installation.diarizationModelFile)
+  let setup = harness.makeSetup(available: 1000)
+
+  await setup.download()
+
+  #expect(
+    setup.state
+      == .insufficientSpace(required: installation.diarizationModel.byteCount, available: 1000))
+  #expect(harness.requestCount(harness.diarizationURL) == 1, "要求を送らない")
+}
+
+@MainActor
+@Test func diarizationModelChecksumMismatchKeepsNoFile() async {
+  let harness = Harness(diarizationSHA256: String(repeating: "0", count: 64))
+  let setup = harness.makeSetup()
+
+  await setup.download()
+
+  let installation = harness.installation
+  #expect(setup.state == .failed(.checksumMismatch))
+  #expect(!harness.exists(installation.diarizationModelFile))
+  #expect(!harness.exists(installation.directory.appending(path: "diarization.gguf.part")))
 }
 
 @MainActor
@@ -394,6 +502,7 @@ func realDownloadInstallsRuntimeAndModel() async {
   let installation = SpeechInstallation.standard
   #expect(setup.state == .checked(.passed))
   #expect(installation.isInstalled)
+  #expect(installation.hasDiarizationModel)
   #expect(FileManager.default.isExecutableFile(atPath: installation.executable.path))
   #expect(getxattr(installation.executable.path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
   #expect(errno == ENOATTR)

@@ -4,19 +4,23 @@ import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "setup")
 
-/// 音声認識のランタイムとモデルの置き場所と取得先。
+/// 音声認識のランタイムとモデル、話者分離のモデルの置き場所と取得先。
 struct SpeechInstallation: Sendable {
   let directory: URL
   var runtime = RemoteFile.speechRuntime
   /// `unzip -l` が示す `runtime` の展開後の合計。
   var runtimeExtractedByteCount: Int64 = 21_074_311
   var model = RemoteFile.haasModel
+  var diarizationModel = RemoteFile.nemotronDiarization
 
   var runtimeDirectory: URL { directory.appending(path: "runtime") }
   var executable: URL { runtimeDirectory.appending(path: "speech") }
   var modelFile: URL { directory.appending(path: model.fileName) }
   var selfCheckLog: URL { directory.appending(path: "selfcheck.log") }
+  var diarizationModelFile: URL { directory.appending(path: diarizationModel.fileName) }
+  /// 文字起こしに要るランタイムと Haas が揃っている。話者分離のモデルは含めない。
   var isInstalled: Bool { exists(executable) && exists(modelFile) }
+  var hasDiarizationModel: Bool { exists(diarizationModelFile) }
 
   static let standard = SpeechInstallation(
     directory: URL.applicationSupportDirectory.appending(path: "amanuensis"))
@@ -24,6 +28,8 @@ struct SpeechInstallation: Sendable {
 
 enum SetupState: Equatable {
   case notInstalled
+  /// ランタイムと Haas はあり、話者分離のモデルだけが無い。
+  case diarizationModelMissing
   case downloading(receivedBytes: Int64, totalBytes: Int64)
   case verifying
   case checking
@@ -71,10 +77,12 @@ extension URLSession {
   /// 未取得からファイルが揃っていたら(起動後に初めて開いたとき)動作確認を始める。
   func refresh() {
     switch state {
-    case .notInstalled, .checked:
+    case .notInstalled, .diarizationModelMissing, .checked:
       if !installation.isInstalled {
         state = .notInstalled
-      } else if state == .notInstalled {
+      } else if !installation.hasDiarizationModel {
+        state = .diarizationModelMissing
+      } else if state == .notInstalled || state == .diarizationModelMissing {
         state = .checking
         Task { await runCheck() }
       }
@@ -82,14 +90,16 @@ extension URLSession {
     }
   }
 
-  /// 足りないファイルを取得して展開し、動作確認する。取得と確認の途中に呼ばれたら何もしない。
+  /// 足りないファイル(ランタイム・Haas・話者分離のモデル)を取得して展開し、動作確認する。取得と確認の途中に呼ばれたら何もしない。
   func download() async {
     guard !isBusy else { return }
     let needsRuntime = !exists(installation.executable)
     let needsModel = !exists(installation.modelFile)
+    let needsDiarizationModel = !exists(installation.diarizationModelFile)
     let pending = [
       needsRuntime ? installation.runtime : nil,
       needsModel ? installation.model : nil,
+      needsDiarizationModel ? installation.diarizationModel : nil,
     ]
     .compactMap { $0 }
     let available: Int64
@@ -134,6 +144,10 @@ extension URLSession {
       }
       if needsModel {
         try await fetch(installation.model, before: done, of: total)
+        done += installation.model.byteCount
+      }
+      if needsDiarizationModel {
+        try await fetch(installation.diarizationModel, before: done, of: total)
       }
     } catch {
       state = .failed(error)
@@ -169,7 +183,7 @@ extension URLSession {
   private var isBusy: Bool {
     switch state {
     case .downloading, .verifying, .checking: true
-    case .notInstalled, .checked, .insufficientSpace, .failed: false
+    case .notInstalled, .diarizationModelMissing, .checked, .insufficientSpace, .failed: false
     }
   }
 
