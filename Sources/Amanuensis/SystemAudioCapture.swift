@@ -4,25 +4,34 @@ import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "capture")
 
+/// 拒否されている録音の権限を `Permission.allCases` の順で返す。確認を出さず、未確認の権限は含めない。
+func deniedRecordingPermissions() -> [Permission] {
+  var denied: [Permission] = []
+  switch AVCaptureDevice.authorizationStatus(for: .audio) {
+  case .denied, .restricted: denied.append(.microphone)
+  default: break
+  }
+  if SystemAudioAccess.current() == .denied { denied.append(.systemAudio) }
+  return denied
+}
+
 /// 録音に足りない権限を `Permission.allCases` の順で返す。値は保存せず、呼ぶたびに今の状態から判定する。
 /// マイクとシステムオーディオ録音が未確認なら確認を出して答えを待つ。
 func checkRecordingPermissions() async -> [Permission] {
-  var missing: [Permission] = []
-  switch AVCaptureDevice.authorizationStatus(for: .audio) {
-  case .authorized: break
-  case .notDetermined:
-    if await !AVCaptureDevice.requestAccess(for: .audio) { missing.append(.microphone) }
-  default: missing.append(.microphone)
+  var missing = deniedRecordingPermissions()
+  if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined,
+    await !AVCaptureDevice.requestAccess(for: .audio)
+  {
+    missing.append(.microphone)
   }
   switch SystemAudioAccess.current() {
-  case .granted: break
   case .undetermined:
     if await !SystemAudioAccess.request() { missing.append(.systemAudio) }
-  case .denied: missing.append(.systemAudio)
   case .unavailable:
     logger.error("permission check unavailable error.type=tcc_unavailable app.error.origin=system")
+  case .granted, .denied: break
   }
-  return missing
+  return Permission.allCases.filter(missing.contains)
 }
 
 /// システムオーディオ録音の許可の状態。

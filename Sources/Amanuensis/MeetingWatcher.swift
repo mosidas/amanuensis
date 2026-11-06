@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import Observation
 import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "detection")
@@ -95,23 +96,29 @@ enum MeetingText {
 }
 
 /// マイクの使用を観測して `MeetingDetector` に渡し、その指示で録音を始めて止め、通知を出す。
-@MainActor final class MeetingWatcher {
+/// 録音の権限が拒否されている間は検知を止める(拒否のまま会議のたびに開始の失敗の警告を出さないため)。
+@MainActor @Observable final class MeetingWatcher {
   // shortcut: 2 秒ごとの読み取り, 開始の遅延を縮める要求が出たらプロセス一覧と IsRunningInput のリスナーに変える
   private static let interval: Duration = .seconds(2)
   private let observe: @MainActor () throws(ObserveFailure) -> [AudioProcess]
+  private let deniedPermissions: @MainActor () -> [Permission]
   private let recorder: Recorder
   private let setting: MeetingDetectionSetting
   private let notify: @MainActor (_ title: String, _ body: String) -> Void
+  /// 検知を止めている(拒否されている)権限。空なら検知している。
+  private(set) var blockedBy: [Permission] = []
   private var detector = MeetingDetector()
   private var observationFailing = false
   private var loop: Task<Void, Never>?
 
   init(
     observe: @escaping @MainActor () throws(ObserveFailure) -> [AudioProcess],
+    deniedPermissions: @escaping @MainActor () -> [Permission],
     recorder: Recorder, setting: MeetingDetectionSetting,
     notify: @escaping @MainActor (_ title: String, _ body: String) -> Void
   ) {
     self.observe = observe
+    self.deniedPermissions = deniedPermissions
     self.recorder = recorder
     self.setting = setting
     self.notify = notify
@@ -128,8 +135,24 @@ enum MeetingText {
     }
   }
 
-  /// 1 回観測して判定し、指示を実行する。観測に失敗した回は判定しない。
+  /// 1 回観測して判定し、指示を実行する。観測に失敗した回と、録音の権限が拒否されている回は判定しない。
+  /// 拒否から戻った回は、続いている会議を新しい会議として扱う。
   func tick(now: ContinuousClock.Instant) async {
+    let denied = deniedPermissions()
+    if denied != blockedBy {
+      if blockedBy.isEmpty {
+        logger.error(
+          "meeting detection paused error.type=permission_denied app.error.origin=client missing=\(denied.map(\.logName).joined(separator: ","), privacy: .public)"
+        )
+      } else if denied.isEmpty {
+        logger.info("meeting detection resumed")
+      }
+      blockedBy = denied
+    }
+    guard denied.isEmpty else {
+      detector = MeetingDetector()
+      return
+    }
     let processes: [AudioProcess]
     do {
       processes = try observe()
@@ -189,7 +212,8 @@ extension NotificationFailure {
 
 // main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
 @MainActor let meetingWatcher = MeetingWatcher(
-  observe: readAudioProcesses, recorder: recorder, setting: MeetingDetectionSetting(),
+  observe: readAudioProcesses, deniedPermissions: deniedRecordingPermissions, recorder: recorder,
+  setting: MeetingDetectionSetting(),
   notify: { title, body in
     // 通知の許可の確認は本人が答えるまで戻らない。待つと会議の終了の検知が止まるため、待たずに出す。
     // 会議中にモーダルを出さないよう、出せなくても警告に逃がさない。

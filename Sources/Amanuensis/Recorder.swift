@@ -234,7 +234,7 @@ enum RecorderState: Equatable {
 private struct StartTimeout: Error {}
 
 extension Permission {
-  fileprivate var logName: String {
+  var logName: String {
     switch self {
     case .microphone: "microphone"
     case .systemAudio: "system_audio"

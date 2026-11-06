@@ -20,6 +20,7 @@ private let startedNotice = [
   let recorder: Recorder
   let setting: MeetingDetectionSetting
   var observed: Result<[AudioProcess], ObserveFailure> = .success([])
+  var denied: [Permission] = []
   private(set) var notifications: [[String]] = []
 
   init() throws {
@@ -31,7 +32,7 @@ private let startedNotice = [
 
   lazy var watcher = MeetingWatcher(
     observe: { [unowned self] () throws(ObserveFailure) -> [AudioProcess] in try observed.get() },
-    recorder: recorder, setting: setting,
+    deniedPermissions: { [unowned self] in denied }, recorder: recorder, setting: setting,
     notify: { [unowned self] in notifications.append([$0, $1]) })
 
   func tick(_ processes: [AudioProcess], at seconds: Int) async {
@@ -152,6 +153,44 @@ extension RecorderTests {
       #expect(fixture.harness.captureCalls == 1, "会議が続いても始め直さない")
       let kept = FileManager.default.fileExists(atPath: recording.folder.path)
       #expect(kept == (ending == .stop), "破棄なら会議フォルダーを残さない")
+      #expect(fixture.harness.reports.isEmpty)
+    }
+
+    @Test func pausesDetectionWhileRecordingPermissionIsDenied() async throws {
+      let fixture = try Fixture()
+      defer { fixture.harness.remove() }
+      fixture.denied = [.microphone]
+
+      await fixture.tick(zoomInUse, at: 0)
+      await fixture.tick(zoomInUse, at: 2)
+
+      #expect(fixture.watcher.blockedBy == [.microphone])
+      #expect(fixture.harness.captureCalls == 0, "権限が足りない間は録音しない")
+      #expect(fixture.notifications.isEmpty, "権限が足りない間は通知しない")
+      #expect(fixture.harness.reports.isEmpty, "会議のたびに警告を出さない")
+
+      await fixture.recorder.start()
+      #expect(fixture.recorder.state.activity == .recording(.manual), "手動の録音は従来どおり始まる")
+    }
+
+    @Test func resumedDetectionTreatsOngoingMeetingAsNew() async throws {
+      let fixture = try Fixture()
+      defer { fixture.harness.remove() }
+      await fixture.tick(zoomInUse, at: 0)
+      // 会議フォルダーの名前は秒の単位なので、同じ秒の 2 回目の録音と衝突しないよう破棄で消す。
+      await fixture.recorder.discard()
+
+      fixture.denied = [.systemAudio]
+      await fixture.tick(zoomInUse, at: 2)
+      #expect(fixture.watcher.blockedBy == [.systemAudio])
+
+      fixture.denied = []
+      await fixture.tick(zoomInUse, at: 4)
+
+      #expect(fixture.watcher.blockedBy.isEmpty)
+      #expect(fixture.recorder.state.activity == .recording(.meeting), "続いている会議を新しい会議として録音する")
+      #expect(fixture.harness.captureCalls == 2)
+      #expect(fixture.notifications == [startedNotice, startedNotice])
       #expect(fixture.harness.reports.isEmpty)
     }
 

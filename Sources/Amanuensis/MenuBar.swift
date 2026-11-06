@@ -112,19 +112,20 @@ final class MenuBar: NSObject {
   }
 
   private func observe() {
-    let state = withObservationTracking {
-      recorder.state
+    let (state, blockedBy) = withObservationTracking {
+      (recorder.state, meetingWatcher.blockedBy)
     } onChange: {
       Task { @MainActor [weak self] in self?.observe() }
     }
-    render(state)
+    render(state, detectionBlockedBy: blockedBy)
   }
 
-  private func render(_ state: RecorderState) {
+  private func render(_ state: RecorderState, detectionBlockedBy: [Permission]) {
     statusItem.button?.image = Self.icon(for: state, resources: Bundle.main.resourceURL)
 
     menu.removeAllItems()
-    for entry in MenuContent.entries(for: state, now: .now) {
+    for entry in MenuContent.entries(for: state, now: .now, detectionBlockedBy: detectionBlockedBy)
+    {
       menu.addItem(item(for: entry))
     }
 
@@ -141,7 +142,9 @@ final class MenuBar: NSObject {
 
   /// 経過時間の行の題だけを今の時刻で書き直す。行の並びは状態が変わるまで変わらない。
   private func tick() {
-    for (item, entry) in zip(menu.items, MenuContent.entries(for: recorder.state, now: .now)) {
+    let entries = MenuContent.entries(
+      for: recorder.state, now: .now, detectionBlockedBy: meetingWatcher.blockedBy)
+    for (item, entry) in zip(menu.items, entries) {
       if case .item(let title, _) = entry { item.title = title }
     }
   }
@@ -159,6 +162,9 @@ final class MenuBar: NSObject {
     case .quit:
       item.action = #selector(NSApplication.terminate(_:))
       item.keyEquivalent = "q"
+    case .systemSettings(let permission):
+      item.action = #selector(openSystemSettings(_:))
+      item.representedObject = permission.settingsURL
     case nil: break
     }
     item.target = action == .quit ? NSApp : self
@@ -184,6 +190,11 @@ final class MenuBar: NSObject {
     NSApp.activate()
     guard alert.runModal() == .alertFirstButtonReturn else { return }
     Task { await recorder.discard() }
+  }
+
+  @objc private func openSystemSettings(_ sender: NSMenuItem) {
+    guard let url = sender.representedObject as? URL else { return }
+    NSWorkspace.shared.open(url)
   }
 
   @objc private func openSettings(_ sender: NSMenuItem) {
