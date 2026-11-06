@@ -138,18 +138,37 @@ func settingsTextMatchesTable(name: String) throws {
   }
   let suiteName = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
   defer { UserDefaults().removePersistentDomain(forName: suiteName) }
-  let recordingFolder = RecordingFolder(defaults: try #require(UserDefaults(suiteName: suiteName)))
-  for (name, root) in [
-    ("recording-default", nil), ("recording-custom", URL(filePath: "/Volumes/会議の録音/amanuensis")),
+  let defaults = try #require(UserDefaults(suiteName: suiteName))
+  let recordingFolder = RecordingFolder(defaults: defaults)
+  let microphone = MicrophoneSetting(defaults: defaults)
+  let microphones = MicrophoneList(
+    read: {
+      [
+        AudioDevice(id: 1, uid: "builtin", name: "MacBook Pro のマイク", hasInput: true),
+        AudioDevice(id: 2, uid: "jump-uid", name: "Jump Desktop Microphone", hasInput: true),
+      ]
+    }, subscribe: { _ in })
+  let jump = MicrophoneChoice.device(uid: "jump-uid", name: "Jump Desktop Microphone")
+  let missing = MicrophoneChoice.device(uid: "missing-uid", name: "Jump Desktop Microphone")
+  let custom = URL(filePath: "/Volumes/会議の録音/amanuensis")
+  for (name, root, choice) in [
+    ("recording-default", nil, MicrophoneChoice.systemDefault),
+    ("recording-custom", custom, .systemDefault),
+    ("recording-microphone-selected", custom, jump),
+    ("recording-microphone-missing", custom, missing),
   ] {
     if let root { recordingFolder.setRoot(root) }
+    microphone.setChoice(choice)
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       let content = Form {
-        Section("録音") { RecordingSettingsView(folder: recordingFolder) }
+        Section("録音") {
+          RecordingSettingsView(
+            folder: recordingFolder, microphone: microphone, microphones: microphones)
+        }
       }
       .formStyle(.grouped)
       try writeSnapshot(
-        content, height: 120, appearance: appearance,
+        content, height: 160, appearance: appearance,
         to: directory.appending(path: "\(name)-\(suffix).png"))
     }
   }

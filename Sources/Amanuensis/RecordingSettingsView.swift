@@ -1,14 +1,20 @@
 import AppKit
 import SwiftUI
 
-/// 録音の保存先の表示と変更。
+/// 録音の保存先とマイクの表示と変更。
 struct RecordingSettingsView: View {
   let folder: RecordingFolder
+  let microphone: MicrophoneSetting
+  let microphones: MicrophoneList
   @State private var root: URL
+  @State private var choice: MicrophoneChoice
 
-  init(folder: RecordingFolder) {
+  init(folder: RecordingFolder, microphone: MicrophoneSetting, microphones: MicrophoneList) {
     self.folder = folder
+    self.microphone = microphone
+    self.microphones = microphones
     _root = State(initialValue: folder.root)
+    _choice = State(initialValue: microphone.choice)
   }
 
   var body: some View {
@@ -19,6 +25,22 @@ struct RecordingSettingsView: View {
           .truncationMode(.middle)
           .help(root.path)
         Button("変更…", action: chooseRoot)
+      }
+    }
+    let rows = MicrophoneMenu.rows(for: choice, devices: microphones.devices)
+    Picker(
+      "マイク",
+      selection: Binding(
+        get: { choice.uid },
+        set: { uid in
+          guard let row = rows.first(where: { $0.choice.uid == uid }) else { return }
+          microphone.setChoice(row.choice)
+          choice = row.choice
+        })
+    ) {
+      ForEach(rows, id: \.choice.uid) { row in
+        Text(row.label).tag(row.choice.uid)
+        if row.choice == .systemDefault { Divider() }
       }
     }
   }

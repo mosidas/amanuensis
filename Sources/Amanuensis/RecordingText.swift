@@ -33,7 +33,9 @@ enum RecordingText {
     case .captureFailed(.noInputDevice):
       "マイクが見つかりません。システム設定の「サウンド」にある「入力」でマイクを選んでから、もう一度録音を開始してください。"
     case .captureFailed(.unsupportedInput(let name, let channels)):
-      "「\(name ?? "既定の入力デバイス")」(\(channels) チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+      "「\(name ?? "既定の入力デバイス")」(\(channels) チャンネル)の入力の形式には対応していません。設定の「マイク」で別のマイクを選んでから、もう一度録音を開始してください。"
+    case .captureFailed(.selectedMicrophoneMissing(let name)):
+      "「\(name)」が見つかりません。マイクを接続するか、設定の「マイク」で別のマイクを選んでから、もう一度録音を開始してください。"
     case .captureFailed(.failed(let step, let type))
     where ["create_tap", "create_aggregate"].contains(step):
       "システム音声を取り込めませんでした。amanuensis を開き直してから録音を開始し、直らないときはエラー(\(step) / \(type))を添えて \(issuesURL) に報告してください。"

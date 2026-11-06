@@ -39,17 +39,24 @@ private let problemRows = [
     name: "no-input-device", problem: .captureFailed(.noInputDevice), title: "録音を開始できませんでした",
     body: "マイクが見つかりません。システム設定の「サウンド」にある「入力」でマイクを選んでから、もう一度録音を開始してください。"),
   ProblemRow(
+    name: "selected-microphone-missing",
+    problem: .captureFailed(.selectedMicrophoneMissing(name: "Jump Desktop Microphone")),
+    title: "録音を開始できませんでした",
+    body:
+      "「Jump Desktop Microphone」が見つかりません。マイクを接続するか、設定の「マイク」で別のマイクを選んでから、もう一度録音を開始してください。"
+  ),
+  ProblemRow(
     name: "unsupported-input",
     problem: .captureFailed(.unsupportedInput(name: "Jump Desktop Microphone", channels: 8)),
     title: "録音を開始できませんでした",
     body:
-      "「Jump Desktop Microphone」(8 チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+      "「Jump Desktop Microphone」(8 チャンネル)の入力の形式には対応していません。設定の「マイク」で別のマイクを選んでから、もう一度録音を開始してください。"
   ),
   ProblemRow(
     name: "unsupported-input-unnamed",
     problem: .captureFailed(.unsupportedInput(name: nil, channels: 8)), title: "録音を開始できませんでした",
     body:
-      "「既定の入力デバイス」(8 チャンネル)の入力の形式には対応していません。システム設定の「サウンド」にある「入力」で別のマイクを選んでから、もう一度録音を開始してください。"
+      "「既定の入力デバイス」(8 チャンネル)の入力の形式には対応していません。設定の「マイク」で別のマイクを選んでから、もう一度録音を開始してください。"
   ),
   ProblemRow(
     name: "tap-create", problem: .captureFailed(.failed(step: "create_tap", type: "-50")),
@@ -123,6 +130,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
   let cases: [(StartFailure, String, String)] = [
     (.noInputDevice, "find_microphone", "no_input_device"),
     (.unsupportedInput(name: "A", channels: 8), "find_microphone", "unsupported_format"),
+    (.selectedMicrophoneMissing(name: "A"), "find_microphone", "selected_device_missing"),
     (.failed(step: "create_tap", type: "-50"), "create_tap", "-50"),
   ]
   for (failure, step, type) in cases {
