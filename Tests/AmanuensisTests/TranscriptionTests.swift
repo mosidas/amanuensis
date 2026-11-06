@@ -191,6 +191,73 @@ private func samples(of url: URL) throws -> (values: [Float], rate: Double, chan
   #expect(duration == 0)
 }
 
+/// `rate` Hz・16 bit・mono の CAF に無音を 400 フレーム書く。
+private func writeSilentCAF(rate: Double, to url: URL) throws {
+  var format = AudioStreamBasicDescription(
+    mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2, mChannelsPerFrame: 1,
+    mBitsPerChannel: 16, mReserved: 0)
+  var file: AudioFileID?
+  try #require(
+    AudioFileCreateWithURL(url as CFURL, kAudioFileCAFType, &format, .eraseFile, &file) == noErr)
+  let handle = try #require(file)
+  defer { AudioFileClose(handle) }
+  let frames = [Int16](repeating: 0, count: 400)
+  var bytes = UInt32(frames.count * 2)
+  try frames.withUnsafeBytes { raw in
+    try #require(AudioFileWriteBytes(handle, false, 0, &bytes, raw.baseAddress!) == noErr)
+  }
+}
+
+// 5 Hz は 10 Hz 未満で 0.1 秒の枠が 0 フレームになる。3 MHz は AVAudioFile が開けるが読むと NSException で異常終了する(点検の実測)。
+@Test(arguments: [5.0, 3_000_000])
+func sampleRateOutsideSpeechRangeIsAudioUnreadable(rate: Double) throws {
+  let directory = try temporaryDirectory("rate-\(Int(rate))")
+  let audio = directory.appending(path: "recording.caf")
+  try writeSilentCAF(rate: rate, to: audio)
+
+  #expect(throws: TranscriptionFailure.audioUnreadable) {
+    try writeMonoChunks(of: audio, to: directory)
+  }
+}
+
+/// `body` を別のスレッドで動かし、`seconds` 秒以内に戻ればその値、戻らなければ nil。
+/// 戻らない実装でテストが止まらないようにする。
+/// 協調スレッドがセマフォ待ちで塞がっても動き出すように、GCD のプールでなく専用のスレッドで動かす。
+func returnsWithin<T: Sendable>(seconds: Double, _ body: @escaping @Sendable () -> T) -> T? {
+  let done = DispatchSemaphore(value: 0)
+  nonisolated(unsafe) var result: T?
+  Thread.detachNewThread {
+    result = body()
+    done.signal()
+  }
+  return done.wait(timeout: .now() + seconds) == .success ? result : nil
+}
+
+@Test(arguments: ["fifo", "link"])
+func recordingThatIsNotPlainFileIsAudioUnreadableWithoutWaiting(kind: String) throws {
+  let directory = try temporaryDirectory("2026-11-06_101500")
+  let audio = directory.appending(path: "recording.caf")
+  if kind == "fifo" {
+    try #require(mkfifo(audio.path, 0o644) == 0)
+  } else {
+    let elsewhere = try temporaryDirectory("elsewhere").appending(path: "recording.caf")
+    try writeSilentCAF(rate: 16_000, to: elsewhere)
+    try FileManager.default.createSymbolicLink(at: audio, withDestinationURL: elsewhere)
+  }
+
+  let result = returnsWithin(seconds: 5) { () -> Result<Int, TranscriptionFailure> in
+    do throws(TranscriptionFailure) {
+      return .success(try writeMonoChunks(of: audio, to: directory).chunks.count)
+    } catch {
+      return .failure(error)
+    }
+  }
+
+  #expect(result == .failure(.audioUnreadable), "5 秒以内に .audioUnreadable で戻る")
+}
+
 /// `.wav` の引数ごとに、区間の 1 秒と 4 秒から始まる語 2 つ(間隔 2.5 秒で別の段落)を出す。
 private let twoWordsPerChunk = #"""
   for a in "$@"; do

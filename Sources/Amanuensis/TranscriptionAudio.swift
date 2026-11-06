@@ -18,6 +18,8 @@ func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailu
   chunks: [AudioChunk], duration: TimeInterval
 ) {
   // shortcut: 区間の WAVE を全部書いてから認識する(1 時間で約 345 MB の一時ファイル), 一時ファイルの容量が問題になったら区間ごとに認識へ渡す
+  // 保存先の FIFO は AVAudioFile が書き手を待って戻らず、リンクは保存先の外を読む。
+  guard RecordingFolder.isPlainFile(audio) else { throw .audioUnreadable }
   let input: AVAudioFile
   do {
     input = try AVAudioFile(forReading: audio)
@@ -25,14 +27,16 @@ func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailu
     throw .audioUnreadable
   }
   let rate = input.processingFormat.sampleRate
+  // 範囲外(NaN を含む)は細工したヘッダー。NaN は Int(rate) で、3 MHz は読み取りの NSException で異常終了する(実測)。
+  guard (8_000...192_000).contains(rate) else { throw .audioUnreadable }
   let channels = Int(input.processingFormat.channelCount)
+  let frame = Int(rate) / 10
   guard
     let buffer = AVAudioPCMBuffer(
       pcmFormat: input.processingFormat, frameCapacity: AVAudioFrameCount(rate))
   else { throw .audioUnreadable }
   let window = maxChunkSeconds * Int(rate)
   let searchStart = minChunkSeconds * Int(rate)
-  let frame = Int(rate) / 10
 
   var chunks: [AudioChunk] = []
   var written = 0

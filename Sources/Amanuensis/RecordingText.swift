@@ -78,7 +78,7 @@ extension Permission {
 
 /// メニューバーのメニューとアイコン。録音の状態から一意に決まる。
 enum MenuContent {
-  enum Action { case start, stop, discard, settings, quit }
+  enum Action { case start, stop, discard, recordings, settings, quit }
 
   enum Entry: Equatable {
     /// `action` が nil の行は押せない。
@@ -98,7 +98,10 @@ enum MenuContent {
         ]
       case .finishing: [.item("録音を保存しています…", nil)]
       }
-    return head + [.item("設定…", .settings), .separator, .item("amanuensis を終了", .quit)]
+    return head + [
+      .item("録音の一覧…", .recordings), .item("設定…", .settings), .separator,
+      .item("amanuensis を終了", .quit),
+    ]
   }
 
   static func accessibilityName(for state: RecorderState, transcribing: Bool) -> String {

@@ -157,3 +157,29 @@ func selfCheckOnBundledSample() async throws {
 private let bundledSampleDirectory = URL(filePath: #filePath)
   .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
   .appending(path: "Resources/SelfCheck")
+
+@Test func appendLogDoesNotFollowSymbolicLink() throws {
+  let directory = FileManager.default.temporaryDirectory.appending(
+    path: "SelfCheckTests-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let target = directory.appending(path: "target.txt")
+  try Data("keep".utf8).write(to: target)
+  let link = directory.appending(path: "selfcheck.log")
+  try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+  appendLog("x", to: link)
+
+  #expect(try readLog(target) == "keep", "リンク先に書かない")
+}
+
+@Test func appendLogReturnsWhenLogIsFIFOWithoutReader() throws {
+  let directory = FileManager.default.temporaryDirectory.appending(
+    path: "SelfCheckTests-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let fifo = directory.appending(path: "transcription.log")
+  try #require(mkfifo(fifo.path, 0o644) == 0)
+
+  #expect(returnsWithin(seconds: 5) { appendLog("x", to: fifo) } != nil, "5 秒以内に戻る")
+}

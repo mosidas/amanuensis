@@ -149,7 +149,7 @@ struct SpeechSettingsView: View {
 }
 
 /// 見出しと本文。失敗は色だけに頼らず印のアイコンでも示す。
-private struct Message: View {
+struct Message: View {
   let title: String
   let detail: String?
   let isFailure: Bool

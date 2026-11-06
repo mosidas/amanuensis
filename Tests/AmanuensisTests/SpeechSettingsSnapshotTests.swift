@@ -174,7 +174,7 @@ func settingsTextMatchesTable(name: String) throws {
   }
 }
 
-@MainActor private func writeSnapshot(
+@MainActor func writeSnapshot(
   _ content: some View, height: CGFloat, appearance: NSAppearance.Name, to url: URL
 ) throws {
   let hosting = NSHostingView(rootView: content)

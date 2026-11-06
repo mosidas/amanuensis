@@ -154,6 +154,14 @@ struct TranscriptionSetting {
     enqueue(meeting)
   }
 
+  /// 一覧の「文字起こし」。自動の設定によらず待ち行列に入れる。
+  func request(_ meeting: URL) {
+    logger.info(
+      "transcription requested source=list folder.name=\(meeting.lastPathComponent, privacy: .public)"
+    )
+    enqueue(meeting)
+  }
+
   /// ランタイムとモデルの取得・動作確認の後。取得済みなら未取得で待たせた録音を文字起こしする。
   func resumeAfterSetup() {
     guard installation.isInstalled else { return }
@@ -163,14 +171,21 @@ struct TranscriptionSetting {
   }
 
   private func enqueue(_ meeting: URL) {
+    guard !queue.contains(meeting) else {
+      logger.info(
+        "transcription request ignored reason=already_queued folder.name=\(meeting.lastPathComponent, privacy: .public)"
+      )
+      return
+    }
     guard installation.isInstalled else {
-      awaitingSetup.append(meeting)
+      if !awaitingSetup.contains(meeting) { awaitingSetup.append(meeting) }
       logger.info(
         "transcription deferred reason=not_installed folder.name=\(meeting.lastPathComponent, privacy: .public)"
       )
       notify(.setupRequired(meeting: meeting.lastPathComponent))
       return
     }
+    awaitingSetup.removeAll { $0 == meeting }
     queue.append(meeting)
     if queue.count == 1 { Task { await drain() } }
   }

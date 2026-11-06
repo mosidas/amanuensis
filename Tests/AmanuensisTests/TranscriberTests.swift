@@ -12,6 +12,8 @@ import Testing
   /// true のあいだ、文字起こしは `release()` まで終わらない。
   var holds = false
   var failing: Set<URL> = []
+  /// true なら、呼ばれた会議フォルダーに `transcript.md` を書く。
+  var writesTranscript = false
   private(set) var calls: [URL] = []
   private(set) var notices: [TranscriptionNotice] = []
   private(set) var running = 0
@@ -54,11 +56,21 @@ import Testing
     defer { running -= 1 }
     if holds { await withCheckedContinuation { pending.append($0) } }
     if failing.contains(meeting) { throw .recognitionFailed }
+    if writesTranscript {
+      do {
+        try Data("# transcript\n".utf8).write(to: meeting.appending(path: "transcript.md"))
+      } catch {
+        throw .saveFailed
+      }
+    }
   }
 }
 
 private let first = URL(filePath: "/meetings/2026-11-06_101500", directoryHint: .isDirectory)
 private let second = URL(filePath: "/meetings/2026-11-06_113000", directoryHint: .isDirectory)
+
+/// 保存先の一覧が会議フォルダー 1 つでない。
+private struct ListingMismatch: Error {}
 
 @MainActor private func waitUntil(_ condition: () -> Bool) async throws {
   for _ in 0..<500 where !condition() {
@@ -172,6 +184,125 @@ private let second = URL(filePath: "/meetings/2026-11-06_113000", directoryHint:
       harness.notices == [
         .finished(meeting: "2026-11-06_101500"), .finished(meeting: "2026-11-06_113000"),
       ])
+  }
+
+  @Test func requestTranscribesEvenWhenAutoIsOff() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    let transcriber = try harness.transcriber(autoTranscribe: false)
+
+    transcriber.request(first)
+    try await waitUntil { harness.calls.count == 1 && transcriber.current == nil }
+
+    #expect(harness.calls == [first], "自動がオフでも一覧の要求なら文字起こしする")
+    #expect(harness.notices == [.finished(meeting: "2026-11-06_101500")])
+  }
+
+  @Test func requestOfQueuedMeetingIsIgnored() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    harness.holds = true
+    let transcriber = try harness.transcriber()
+
+    transcriber.request(first)
+    transcriber.request(first)
+    try await waitUntil { harness.calls.count == 1 }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(harness.calls == [first], "二重の要求で 2 回目を始めない")
+    #expect(transcriber.queue == [first], "待ち行列に 1 回だけ入る")
+
+    transcriber.recordingSaved(second)
+    transcriber.request(second)
+    #expect(transcriber.queue == [first, second], "自動と手動の重複も 1 回だけ")
+
+    harness.release()
+    try await waitUntil { harness.calls.count == 2 }
+    harness.release()
+    try await waitUntil { transcriber.current == nil }
+    #expect(harness.calls == [first, second])
+
+    transcriber.request(first)
+    try await waitUntil { harness.calls.count == 3 }
+    harness.release()
+    try await waitUntil { transcriber.current == nil }
+    #expect(harness.calls == [first, second, first], "終わった後は再び要求できる")
+  }
+
+  @Test func requestBeforeSetupWaitsOnceAndNotifiesEachTime() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    let transcriber = try harness.transcriber()
+
+    transcriber.request(first)
+    transcriber.request(first)
+    #expect(
+      harness.notices == [
+        .setupRequired(meeting: "2026-11-06_101500"), .setupRequired(meeting: "2026-11-06_101500"),
+      ], "押すたびに通知する")
+
+    try harness.install()
+    transcriber.resumeAfterSetup()
+    try await waitUntil { harness.calls.count >= 1 && transcriber.current == nil }
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.calls == [first], "未取得の待ちには 1 回だけ入る")
+  }
+
+  @Test func requestAfterInstallBeforeResumeRunsOnce() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    let transcriber = try harness.transcriber()
+
+    transcriber.request(first)
+    try harness.install()
+    transcriber.request(first)
+    try await waitUntil { harness.calls.count == 1 && transcriber.current == nil }
+    transcriber.resumeAfterSetup()
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.calls == [first], "動作確認の最中の要求と取得後の再開で 2 回走らない")
+    #expect(
+      harness.notices == [
+        .setupRequired(meeting: "2026-11-06_101500"), .finished(meeting: "2026-11-06_101500"),
+      ])
+  }
+
+  @Test func requestedTranscriptAppearsInListing() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    harness.holds = true
+    harness.writesTranscript = true
+    let suiteName = "TranscriberTests-\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+    let root = harness.directory.appending(path: "recordings", directoryHint: .isDirectory)
+    let folder = RecordingFolder(
+      defaults: try #require(UserDefaults(suiteName: suiteName)), standardRoot: root)
+    let meetingFolder = try folder.makeMeetingFolder(at: .now)
+    try Data("x".utf8).write(to: meetingFolder.appending(path: "recording.caf"))
+    let transcriber = try harness.transcriber(autoTranscribe: false)
+
+    func listed() throws -> Meeting {
+      guard case .meetings(let meetings) = folder.meetings(), meetings.count == 1 else {
+        throw ListingMismatch()
+      }
+      return meetings[0]
+    }
+
+    let before = try listed()
+    #expect(!before.hasTranscript)
+    transcriber.request(before.folder)
+    try await waitUntil { harness.calls.count == 1 }
+    #expect(
+      MeetingStatus(of: try listed(), recorder: .idle, queue: transcriber.queue) == .transcribing)
+
+    harness.release()
+    try await waitUntil { transcriber.queue.isEmpty }
+    let after = try listed()
+    #expect(after.hasTranscript)
+    #expect(MeetingStatus(of: after, recorder: .idle, queue: transcriber.queue) == .transcribed)
   }
 
   @Test func stoppingRecordingWritesTranscriptToMeetingFolder() async throws {
