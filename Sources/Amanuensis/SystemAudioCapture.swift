@@ -69,11 +69,12 @@ enum SystemAudioAccess {
   }
 }
 
-/// システム音声を process tap、マイクを既定の入力デバイスから取り込み、`file` へ書く。
+/// システム音声を process tap、マイクを `microphone` のデバイスから取り込み、`file` へ書く。
 @MainActor func startSystemAudioCapture(
-  file: URL, onInterrupt: @escaping @Sendable (RecordingProblem) -> Void
+  file: URL, microphone: MicrophoneChoice,
+  onInterrupt: @escaping @Sendable (RecordingProblem) -> Void
 ) async throws -> CaptureSession {
-  try await openCapture(file: file, onInterrupt: onInterrupt)
+  try await openCapture(file: file, microphone: microphone, onInterrupt: onInterrupt)
 }
 
 /// 取り込みを始められなかった理由。ログの step と error.type はここから決まる。
@@ -81,11 +82,13 @@ enum StartFailure: Error, Equatable {
   case noInputDevice
   /// `name` はデバイス名を読めなかったときに nil。
   case unsupportedInput(name: String?, channels: Int)
+  /// 保存したマイクが入力デバイスの一覧に無い。`name` は保存した表示名。
+  case selectedMicrophoneMissing(name: String)
   case failed(step: String, type: String)
 
   var step: String {
     switch self {
-    case .noInputDevice, .unsupportedInput: "find_microphone"
+    case .noInputDevice, .unsupportedInput, .selectedMicrophoneMissing: "find_microphone"
     case .failed(let step, _): step
     }
   }
@@ -94,6 +97,7 @@ enum StartFailure: Error, Equatable {
     switch self {
     case .noInputDevice: "no_input_device"
     case .unsupportedInput: "unsupported_format"
+    case .selectedMicrophoneMissing: "selected_device_missing"
     case .failed(_, let type): type
     }
   }
@@ -106,13 +110,14 @@ private func check(_ status: OSStatus, _ step: String) throws(StartFailure) {
 // IOProc とリスナーの block を MainActor の文脈で作ると、HAL のスレッドから呼ばれた時点で異常終了する(実測)。
 // そのため準備は nonisolated の関数で行う。
 nonisolated private func openCapture(
-  file: URL, onInterrupt: @escaping @Sendable (RecordingProblem) -> Void
+  file: URL, microphone: MicrophoneChoice,
+  onInterrupt: @escaping @Sendable (RecordingProblem) -> Void
 ) async throws -> CaptureSession {
   let begin = ContinuousClock.now
   let pipe = CapturePipe(writer: try StereoRecordingWriter(url: file), onInterrupt: onInterrupt)
   let formats: (microphone: AVAudioFormat, systemAudio: AVAudioFormat)
   do throws(StartFailure) {
-    formats = try prepare(pipe)
+    formats = try prepare(pipe, microphone: microphone)
   } catch {
     logger.error(
       "capture failed step=\(error.step, privacy: .public) error.type=\(error.type, privacy: .public) app.error.origin=system"
@@ -122,7 +127,7 @@ nonisolated private func openCapture(
   }
   let startMilliseconds = Int((ContinuousClock.now - begin) / .milliseconds(1))
   logger.info(
-    "capture started microphone=\(Int(formats.microphone.sampleRate), privacy: .public)/\(formats.microphone.channelCount, privacy: .public) system_audio=\(Int(formats.systemAudio.sampleRate), privacy: .public)/\(formats.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public)"
+    "capture started microphone=\(Int(formats.microphone.sampleRate), privacy: .public)/\(formats.microphone.channelCount, privacy: .public) system_audio=\(Int(formats.systemAudio.sampleRate), privacy: .public)/\(formats.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public) microphone.choice=\(microphone == .systemDefault ? "default" : "device", privacy: .public)"
   )
   return CaptureSession {
     pipe.markStopping()
@@ -135,10 +140,24 @@ nonisolated private func openCapture(
 
 /// tap・集約デバイス・IOProc・リスナーを作って取り込みを始め、2 つの音源の形式を返す。
 /// 作ったものを壊す手順は `pipe.teardown` に積む。
-nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
-  microphone: AVAudioFormat, systemAudio: AVAudioFormat
-) {
+nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: MicrophoneChoice)
+  throws(StartFailure) -> (microphone: AVAudioFormat, systemAudio: AVAudioFormat)
+{
   let system = AudioObjectID(kAudioObjectSystemObject)
+  let microphone: AudioObjectID
+  switch choice {
+  case .systemDefault:
+    var defaultInput = AudioObjectID(kAudioObjectUnknown)
+    try check(
+      read(system, kAudioHardwarePropertyDefaultInputDevice, into: &defaultInput),
+      "find_microphone")
+    guard defaultInput != kAudioObjectUnknown else { throw .noInputDevice }
+    microphone = defaultInput
+  case .device(let uid, let name):
+    microphone = try selectedMicrophone(uid: uid, name: name, in: readInputDevices())
+  }
+  let microphoneFormat = try inputFormat(of: microphone)
+
   var ownProcess = AudioObjectID(kAudioObjectUnknown)
   let translated = read(
     system, kAudioHardwarePropertyTranslatePIDToProcessObject, into: &ownProcess,
@@ -161,7 +180,8 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
 
   let aggregateDescription: [String: Any] = [
     kAudioAggregateDeviceNameKey: "amanuensis",
-    kAudioAggregateDeviceUIDKey: UUID().uuidString,
+    // 私有の集約デバイスも作ったプロセスの一覧には見える(AudioHardware.h の kAudioAggregateDeviceIsPrivateKey)ため、接頭辞で見分ける。
+    kAudioAggregateDeviceUIDKey: privateAggregateUIDPrefix + UUID().uuidString,
     kAudioAggregateDeviceIsPrivateKey: true,
     kAudioAggregateDeviceTapAutoStartKey: true,
     kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID]],
@@ -173,12 +193,6 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
   pipe.teardown.add { [aggregate] in
     stopCheck(AudioHardwareDestroyAggregateDevice(aggregate), "destroy")
   }
-
-  var microphone = AudioObjectID(kAudioObjectUnknown)
-  try check(
-    read(system, kAudioHardwarePropertyDefaultInputDevice, into: &microphone), "find_microphone")
-  guard microphone != kAudioObjectUnknown else { throw .noInputDevice }
-  let microphoneFormat = try inputFormat(of: microphone)
 
   let devices = [
     (aggregate, RecordingSource.systemAudio, systemFormat),
@@ -219,13 +233,11 @@ nonisolated private func prepare(_ pipe: CapturePipe) throws(StartFailure) -> (
 /// 入力デバイスの先頭の入力ストリームの形式。IOProc はこの形式でバッファーを渡す。
 nonisolated private func inputFormat(of device: AudioObjectID) throws(StartFailure) -> AVAudioFormat
 {
-  var address = propertyAddress(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)
-  var size: UInt32 = 0
-  try check(AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size), "find_microphone")
-  var streams = [AudioStreamID](
-    repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioStreamID>.size)
+  var streams: [AudioStreamID] = []
   try check(
-    AudioObjectGetPropertyData(device, &address, 0, nil, &size, &streams), "find_microphone")
+    readList(
+      device, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput, into: &streams),
+    "find_microphone")
   guard let stream = streams.first else { throw .noInputDevice }
   var description = AudioStreamBasicDescription()
   try check(read(stream, kAudioStreamPropertyVirtualFormat, into: &description), "find_microphone")
@@ -236,7 +248,7 @@ nonisolated private func inputFormat(of device: AudioObjectID) throws(StartFailu
 }
 
 /// デバイスの表示名。読めなければ nil。
-private func deviceName(_ device: AudioObjectID) -> String? {
+func deviceName(_ device: AudioObjectID) -> String? {
   var name: Unmanaged<CFString>?
   guard read(device, kAudioObjectPropertyName, into: &name) == noErr, let name else { return nil }
   return name.takeRetainedValue() as String
@@ -257,7 +269,7 @@ func inputFormat(from description: AudioStreamBasicDescription) -> AVAudioFormat
   return format
 }
 
-private func propertyAddress(
+func propertyAddress(
   _ selector: AudioObjectPropertySelector,
   scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
 ) -> AudioObjectPropertyAddress {
@@ -265,7 +277,7 @@ private func propertyAddress(
     mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
 }
 
-private func read<Value>(
+func read<Value>(
   _ object: AudioObjectID, _ selector: AudioObjectPropertySelector, into value: inout Value,
   qualifier: pid_t? = nil
 ) -> OSStatus {
@@ -278,6 +290,24 @@ private func read<Value>(
     return AudioObjectGetPropertyData(
       object, &address, UInt32(MemoryLayout<pid_t>.size), &qualifier, &size, value)
   }
+}
+
+/// 可変長の ID の配列を読む。
+func readList(
+  _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+  scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+  into list: inout [AudioObjectID]
+) -> OSStatus {
+  var address = propertyAddress(selector, scope: scope)
+  var size: UInt32 = 0
+  let sized = AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size)
+  guard sized == noErr else { return sized }
+  var items = [AudioObjectID](
+    repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+  let status = AudioObjectGetPropertyData(object, &address, 0, nil, &size, &items)
+  guard status == noErr else { return status }
+  list = Array(items.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+  return noErr
 }
 
 /// 片付けの失敗はログに残し、残りの片付けを続ける。

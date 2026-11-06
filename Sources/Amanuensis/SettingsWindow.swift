@@ -20,6 +20,7 @@ func showSettings() {
     }()
   // 開くたびにビューを作り直し、保存値とディスクの中身を読み直す。
   speechSetup.refresh()
+  microphones.refresh()
   let hosting = NSHostingView(rootView: SettingsView())
   hosting.sizingOptions = [.minSize]
   window.contentView = hosting
@@ -32,7 +33,8 @@ private struct SettingsView: View {
   var body: some View {
     Form {
       Section("録音") {
-        RecordingSettingsView(folder: RecordingFolder())
+        RecordingSettingsView(
+          folder: RecordingFolder(), microphone: MicrophoneSetting(), microphones: microphones)
       }
       Section("会議の検知") {
         MeetingDetectionSettingsView(setting: MeetingDetectionSetting())
