@@ -14,20 +14,29 @@ import Testing
   var failing: Set<URL> = []
   /// true なら、呼ばれた会議フォルダーに `transcript.md` を書く。
   var writesTranscript = false
+  /// 文字起こしが返す、話者のラベルを付けなかった理由。
+  var skip: SpeakerSkip?
   private(set) var calls: [URL] = []
+  /// 呼ばれたときに渡された「話者を分ける」。`calls` と同じ順。
+  private(set) var separateSpeakers: [Bool] = []
   private(set) var notices: [TranscriptionNotice] = []
   private(set) var running = 0
   private(set) var maxRunning = 0
   private var pending: [CheckedContinuation<Void, Never>] = []
 
-  func transcriber(autoTranscribe: Bool = true) throws -> Transcriber {
+  func transcriber(autoTranscribe: Bool = true, separateSpeakers: Bool = false) throws
+    -> Transcriber
+  {
     let setting = TranscriptionSetting(
       defaults: try #require(UserDefaults(suiteName: suiteName)))
     setting.setAutoTranscribe(autoTranscribe)
+    setting.setSeparateSpeakers(separateSpeakers)
     return Transcriber(
       installation: installation, setting: setting,
-      transcribe: { [unowned self] meeting, _ async throws(TranscriptionFailure) in
-        try await transcribe(meeting)
+      transcribe: {
+        [unowned self] meeting, _, separateSpeakers async throws(TranscriptionFailure) in
+        self.separateSpeakers.append(separateSpeakers)
+        return try await transcribe(meeting)
       },
       notify: { [unowned self] in notices.append($0) })
   }
@@ -49,7 +58,7 @@ import Testing
     try? FileManager.default.removeItem(at: directory)
   }
 
-  private func transcribe(_ meeting: URL) async throws(TranscriptionFailure) {
+  private func transcribe(_ meeting: URL) async throws(TranscriptionFailure) -> SpeakerSkip? {
     calls.append(meeting)
     running += 1
     maxRunning = max(maxRunning, running)
@@ -63,6 +72,7 @@ import Testing
         throw .saveFailed
       }
     }
+    return skip
   }
 }
 
@@ -71,6 +81,11 @@ private let second = URL(filePath: "/meetings/2026-11-06_113000", directoryHint:
 
 /// 保存先の一覧が会議フォルダー 1 つでない。
 private struct ListingMismatch: Error {}
+
+/// 録音を始めても録音中にならなかった。
+private struct RecordingNotStarted: Error {
+  let state: String
+}
 
 @MainActor private func waitUntil(_ condition: () -> Bool) async throws {
   for _ in 0..<500 where !condition() {
@@ -94,7 +109,38 @@ private struct ListingMismatch: Error {}
     try await waitUntil { transcriber.current == nil }
     #expect(transcriber.current == nil)
     #expect(harness.calls == [first])
+    #expect(harness.separateSpeakers == [false], "既定では話者を分けない")
     #expect(harness.notices == [.finished(meeting: "2026-11-06_101500")])
+  }
+
+  @Test func separateSpeakersSettingIsPassedToTranscription() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    let transcriber = try harness.transcriber(separateSpeakers: true)
+
+    transcriber.recordingSaved(first)
+    try await waitUntil { harness.calls.count == 1 && transcriber.current == nil }
+
+    #expect(harness.separateSpeakers == [true])
+    #expect(harness.notices == [.finished(meeting: "2026-11-06_101500")])
+  }
+
+  @Test(arguments: [SpeakerSkip.modelMissing, .failed])
+  func skippedSpeakersAreNotifiedWithoutWaitingForSetup(skip: SpeakerSkip) async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    harness.skip = skip
+    let transcriber = try harness.transcriber(separateSpeakers: true)
+
+    transcriber.recordingSaved(first)
+    try await waitUntil { harness.calls.count == 1 && transcriber.current == nil }
+    transcriber.resumeAfterSetup()
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.calls == [first], "話者分離のモデルの取得を待たず、再開でもう一度文字起こししない")
+    #expect(harness.notices == [.finishedWithoutSpeakers(skip, meeting: "2026-11-06_101500")])
   }
 
   @Test func autoOffOnlyNotifiesSaved() async throws {
@@ -306,6 +352,30 @@ private struct ListingMismatch: Error {}
   }
 
   @Test func stoppingRecordingWritesTranscriptToMeetingFolder() async throws {
+    let (transcript, notices, name) = try await stopRecording(
+      separateSpeakers: false, hasDiarizationModel: true)
+    #expect(notices == [.finished(meeting: name)])
+    #expect(transcript.contains("\n[00:00:00] こんにちは\n"), "\(transcript)")
+  }
+
+  @Test func stoppingRecordingWithSeparateSpeakersLabelsParagraphs() async throws {
+    let (transcript, notices, name) = try await stopRecording(
+      separateSpeakers: true, hasDiarizationModel: true)
+    #expect(notices == [.finished(meeting: name)])
+    #expect(transcript.contains("\n[00:00:00] 話者 1: こんにちは\n"), "\(transcript)")
+  }
+
+  @Test func stoppingRecordingWithoutDiarizationModelWritesUnlabeledTranscript() async throws {
+    let (transcript, notices, name) = try await stopRecording(
+      separateSpeakers: true, hasDiarizationModel: false)
+    #expect(notices == [.finishedWithoutSpeakers(.modelMissing, meeting: name)])
+    #expect(transcript.contains("\n[00:00:00] こんにちは\n"), "\(transcript)")
+  }
+
+  /// 偽の speech(asr と diarize に答える)で録音を始めて止め、`transcript.md`・通知・会議フォルダーの名前を返す。
+  private func stopRecording(separateSpeakers: Bool, hasDiarizationModel: Bool) async throws -> (
+    transcript: String, notices: [TranscriptionNotice], meeting: String
+  ) {
     let directory = FileManager.default.temporaryDirectory.appending(
       path: "TranscriberTests-\(UUID().uuidString)")
     let suiteName = "TranscriberTests-\(UUID().uuidString)"
@@ -315,21 +385,30 @@ private struct ListingMismatch: Error {}
     }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let defaults = try #require(UserDefaults(suiteName: suiteName))
+    let setting = TranscriptionSetting(defaults: defaults)
+    setting.setSeparateSpeakers(separateSpeakers)
     let installation = try fakeInstallation(
       #"""
-      for a in "$@"; do
-        case "$a" in *.wav)
-          printf '{"file":"%s","text":"","tokens":[{"start":0.2,"end":0.6,"text":"こんにちは"}]}\n' "$a";;
-        esac
-      done
+      case "$1" in
+      asr)
+        for a in "$@"; do
+          case "$a" in *.wav)
+            printf '{"file":"%s","text":"","tokens":[{"start":0.2,"end":0.6,"text":"こんにちは"}]}\n' "$a";;
+          esac
+        done;;
+      diarize)
+        printf '{"file":"%s","segments":[{"start":0.1,"end":0.7,"speaker":0}]}\n' "$5";;
+      esac
       """#)
     defer { try? FileManager.default.removeItem(at: installation.directory) }
     try Data().write(to: installation.modelFile)
+    if hasDiarizationModel { try Data().write(to: installation.diarizationModelFile) }
     var notices: [TranscriptionNotice] = []
     let transcriber = Transcriber(
-      installation: installation, setting: TranscriptionSetting(defaults: defaults),
-      transcribe: { meeting, installation async throws(TranscriptionFailure) in
-        try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+      installation: installation, setting: setting,
+      transcribe: { meeting, installation, separateSpeakers async throws(TranscriptionFailure) in
+        try await transcribe(
+          meeting: meeting, installation: installation, separateSpeakers: separateSpeakers)
       },
       notify: { notices.append($0) })
     let folder = RecordingFolder(defaults: defaults, standardRoot: directory)
@@ -344,18 +423,16 @@ private struct ListingMismatch: Error {}
 
     await recorder.start()
     guard case .recording(let recording) = recorder.state else {
-      Issue.record("録音中になる: \(recorder.state)")
-      return
+      throw RecordingNotStarted(state: "\(recorder.state)")
     }
     await recorder.stop()
     #expect(transcriber.current == recording.folder, "停止すると文字起こしが始まる")
     try await waitUntil { transcriber.current == nil }
 
     #expect(reports.isEmpty)
-    #expect(notices == [.finished(meeting: recording.folder.lastPathComponent)])
     let transcript = try String(
       contentsOf: recording.folder.appending(path: "transcript.md"), encoding: .utf8)
-    #expect(transcript.contains("\n[00:00:00] こんにちは\n"), "\(transcript)")
+    return (transcript, notices, recording.folder.lastPathComponent)
   }
 }
 
@@ -371,6 +448,19 @@ private struct ListingMismatch: Error {}
     #expect(!setting.autoTranscribe)
     defaults.set("broken", forKey: "transcribeAfterRecording")
     #expect(setting.autoTranscribe, "保存値が Bool でなければ既定のオン")
+  }
+
+  @Test func separateSpeakersDefaultsToOffAndKeepsChoice() throws {
+    let suiteName = "TranscriptionSettingTests-\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    let setting = TranscriptionSetting(defaults: defaults)
+
+    #expect(!setting.separateSpeakers, "保存値が無ければオフ")
+    setting.setSeparateSpeakers(true)
+    #expect(setting.separateSpeakers)
+    defaults.set("broken", forKey: "separateSpeakers")
+    #expect(!setting.separateSpeakers, "保存値が Bool でなければ既定のオフ")
   }
 }
 
@@ -406,6 +496,18 @@ private let noticeRows = [
   NoticeRow(
     name: "save-failed", notice: .failed(.saveFailed, meeting: "2026-11-06_101500"),
     title: "文字起こしを保存できませんでした", body: "空き容量とフォルダーのアクセス権を確かめてください。"),
+  NoticeRow(
+    name: "finished-without-speakers-model-missing",
+    notice: .finishedWithoutSpeakers(.modelMissing, meeting: "2026-11-06_101500"),
+    title: "話者を分けずに文字起こししました",
+    body: "話者分離のモデルが未取得です。「設定…」の「音声認識」でダウンロードすると、次の文字起こしから話者を分けます。"),
+  NoticeRow(
+    name: "finished-without-speakers-failed",
+    notice: .finishedWithoutSpeakers(.failed, meeting: "2026-11-06_101500"),
+    title: "話者を分けずに文字起こししました",
+    body:
+      "話者分離が失敗しました。2026-11-06_101500 の transcription.log を添えて https://github.com/mosidas/amanuensis/issues に報告してください。"
+  ),
 ]
 
 @Suite struct TranscriptionTextTests {

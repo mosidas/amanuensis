@@ -47,12 +47,13 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   }
   defer { try? FileManager.default.removeItem(at: temporary) }
 
-  let diarize = separateSpeakers && installation.hasDiarizationModel
-  if separateSpeakers && !diarize {
+  var skip: SpeakerSkip? =
+    separateSpeakers && !installation.hasDiarizationModel ? .modelMissing : nil
+  if skip == .modelMissing {
     logger.info(
       "transcription speakers skipped reason=model_missing folder.name=\(name, privacy: .public)")
   }
-  let whole = diarize ? temporary.appending(path: "whole.wav") : nil
+  let whole = separateSpeakers && skip == nil ? temporary.appending(path: "whole.wav") : nil
   let chunks: [AudioChunk]
   let duration: TimeInterval
   do {
@@ -94,7 +95,6 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   }
 
   var speakers: [SpeakerSegment]?
-  var skip: SpeakerSkip? = separateSpeakers && !diarize ? .modelMissing : nil
   if let whole, !tokens.isEmpty {
     do throws(SpeakerFailure) {
       speakers = try await diarizeSpeakers(
@@ -183,11 +183,14 @@ enum TranscriptionNotice: Equatable {
   case autoOff(meeting: String)
   case setupRequired(meeting: String)
   case failed(TranscriptionFailure, meeting: String)
+  /// 「話者を分ける」がオンなのにラベル無しで書いた。
+  case finishedWithoutSpeakers(SpeakerSkip, meeting: String)
 }
 
-/// 録音を停止したら自動で文字起こしするかの設定。
+/// 録音を停止したら自動で文字起こしするか、段落に話者のラベルを付けるかの設定。
 struct TranscriptionSetting {
   private static let key = "transcribeAfterRecording"
+  private static let separateSpeakersKey = "separateSpeakers"
   private let defaults: UserDefaults
 
   init(defaults: UserDefaults = .standard) {
@@ -200,6 +203,13 @@ struct TranscriptionSetting {
   func setAutoTranscribe(_ autoTranscribe: Bool) {
     defaults.set(autoTranscribe, forKey: Self.key)
   }
+
+  /// 保存値が Bool でなければ既定のオフ。
+  var separateSpeakers: Bool { defaults.object(forKey: Self.separateSpeakersKey) as? Bool ?? false }
+
+  func setSeparateSpeakers(_ separateSpeakers: Bool) {
+    defaults.set(separateSpeakers, forKey: Self.separateSpeakersKey)
+  }
 }
 
 /// 文字起こしの待ち行列を持つ。状態の持ち主はこの型だけである。speech は同時に 1 つだけ動かす。
@@ -211,12 +221,14 @@ struct TranscriptionSetting {
   private var awaitingSetup: [URL] = []
   private let installation: SpeechInstallation
   private let setting: TranscriptionSetting
-  private let transcribe: (URL, SpeechInstallation) async throws(TranscriptionFailure) -> Void
+  private let transcribe:
+    (URL, SpeechInstallation, Bool) async throws(TranscriptionFailure) -> SpeakerSkip?
   private let notify: @MainActor (TranscriptionNotice) -> Void
 
   init(
     installation: SpeechInstallation, setting: TranscriptionSetting,
-    transcribe: @escaping (URL, SpeechInstallation) async throws(TranscriptionFailure) -> Void,
+    transcribe:
+      @escaping (URL, SpeechInstallation, Bool) async throws(TranscriptionFailure) -> SpeakerSkip?,
     notify: @escaping @MainActor (TranscriptionNotice) -> Void
   ) {
     self.installation = installation
@@ -278,8 +290,9 @@ struct TranscriptionSetting {
   private func drain() async {
     while let meeting = queue.first {
       do {
-        try await transcribe(meeting, installation)
-        notify(.finished(meeting: meeting.lastPathComponent))
+        let name = meeting.lastPathComponent
+        let skip = try await transcribe(meeting, installation, setting.separateSpeakers)
+        notify(skip.map { .finishedWithoutSpeakers($0, meeting: name) } ?? .finished(meeting: name))
       } catch {
         notify(.failed(error, meeting: meeting.lastPathComponent))
       }
@@ -291,8 +304,9 @@ struct TranscriptionSetting {
 // main.swift のトップレベルはテストバンドルで実行されないため、遅延初期化されるここに置く。
 @MainActor let transcriber = Transcriber(
   installation: .standard, setting: TranscriptionSetting(),
-  transcribe: { meeting, installation async throws(TranscriptionFailure) in
-    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+  transcribe: { meeting, installation, separateSpeakers async throws(TranscriptionFailure) in
+    try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: separateSpeakers)
   },
   notify: { notice in
     // 会議中にモーダルを出さないよう、出せなくても警告に逃がさない。

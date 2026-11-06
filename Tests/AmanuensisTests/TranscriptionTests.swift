@@ -50,6 +50,16 @@ private func segment(_ start: TimeInterval, _ end: TimeInterval, _ speaker: Int)
     ])
 }
 
+@Test func wordOverlappingTwoSegmentsEquallyTakesTheEarlierSpeaker() {
+  let tokens = [token(0.0, 0.4, "あ"), token(1.0, 2.0, "い")]  // 「い」は前後の区間と 0.5 秒ずつ重なる
+  let speakers = [segment(0.0, 0.5, 7), segment(0.5, 1.5, 5), segment(1.5, 2.5, 7)]
+  #expect(
+    paragraphs(tokens, speakers: speakers) == [
+      TranscriptParagraph(start: 0.0, text: "あ", speaker: 1),
+      TranscriptParagraph(start: 1.0, text: "い", speaker: 2),
+    ])
+}
+
 @Test func speakerSegmentsReadOneLineForWholeFile() throws {
   let stdout = Data(
     #"{"file":"/tmp/t/whole.wav","segments":[{"start":0.5,"end":2.0,"speaker":0},{"start":2.5,"end":11.0,"speaker":1}]}"#

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Observation
 import Testing
 
 @testable import Amanuensis
@@ -117,6 +118,49 @@ private struct Harness {
   func requestCount(_ url: URL) -> Int { LocalFileURLProtocol.receivedRanges(for: url).count }
 
   func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+}
+
+/// `setup.state` が置き換わるたびに、置き換わる前の値を記録する(`onChange` は値の変わる直前に同期で呼ばれる)。
+@MainActor
+private final class StateHistory {
+  private(set) var states: [SetupState] = []
+  private let setup: SpeechSetup
+
+  init(_ setup: SpeechSetup) {
+    self.setup = setup
+    track()
+  }
+
+  private func track() {
+    withObservationTracking {
+      _ = setup.state
+    } onChange: {
+      MainActor.assumeIsolated {
+        self.states.append(self.setup.state)
+        self.track()
+      }
+    }
+  }
+}
+
+@MainActor
+@Test func progressOfThreeFilesNeverGoesBackAndEndsWithVerifying() async throws {
+  let harness = Harness()
+  let setup = harness.makeSetup()
+  let history = StateHistory(setup)
+
+  await setup.download()
+  let states = history.states + [setup.state]
+
+  let received = states.compactMap {
+    if case .downloading(let receivedBytes, _) = $0 { receivedBytes } else { nil }
+  }
+  #expect(zip(received, received.dropFirst()).allSatisfy { $0 <= $1 }, "\(states)")
+  let verifying = try #require(states.firstIndex(of: .verifying), "\(states)")
+  #expect(
+    states[verifying...].allSatisfy {
+      if case .downloading = $0 { false } else { true }
+    }, "確認に入った後に取得へ戻らない: \(states)")
 }
 
 @MainActor

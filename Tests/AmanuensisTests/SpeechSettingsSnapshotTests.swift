@@ -141,6 +141,20 @@ func settingsTextMatchesTable(name: String) throws {
         to: directory.appending(path: "\(row.name)-\(suffix).png"))
     }
   }
+  let transcriptionSuite = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
+  defer { UserDefaults().removePersistentDomain(forName: transcriptionSuite) }
+  let transcription = TranscriptionSetting(
+    defaults: try #require(UserDefaults(suiteName: transcriptionSuite)))
+  transcription.setSeparateSpeakers(true)
+  for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+    let content = Form {
+      Section("音声認識") { TranscriptionSettingsView(setting: transcription) }
+    }
+    .formStyle(.grouped)
+    try writeSnapshot(
+      content, height: 160, appearance: appearance,
+      to: directory.appending(path: "transcription-settings-\(suffix).png"))
+  }
   let suiteName = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
   defer { UserDefaults().removePersistentDomain(forName: suiteName) }
   let defaults = try #require(UserDefaults(suiteName: suiteName))
