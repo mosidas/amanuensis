@@ -224,10 +224,11 @@ func sampleRateOutsideSpeechRangeIsAudioUnreadable(rate: Double) throws {
 
 /// `body` を別のスレッドで動かし、`seconds` 秒以内に戻ればその値、戻らなければ nil。
 /// 戻らない実装でテストが止まらないようにする。
+/// 協調スレッドがセマフォ待ちで塞がっても動き出すように、GCD のプールでなく専用のスレッドで動かす。
 func returnsWithin<T: Sendable>(seconds: Double, _ body: @escaping @Sendable () -> T) -> T? {
   let done = DispatchSemaphore(value: 0)
   nonisolated(unsafe) var result: T?
-  DispatchQueue.global().async {
+  Thread.detachNewThread {
     result = body()
     done.signal()
   }
