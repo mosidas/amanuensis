@@ -185,6 +185,7 @@ struct TranscriptionSetting {
       notify(.setupRequired(meeting: meeting.lastPathComponent))
       return
     }
+    awaitingSetup.removeAll { $0 == meeting }
     queue.append(meeting)
     if queue.count == 1 { Task { await drain() } }
   }

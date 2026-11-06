@@ -250,6 +250,25 @@ private struct ListingMismatch: Error {}
     #expect(harness.calls == [first], "未取得の待ちには 1 回だけ入る")
   }
 
+  @Test func requestAfterInstallBeforeResumeRunsOnce() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    let transcriber = try harness.transcriber()
+
+    transcriber.request(first)
+    try harness.install()
+    transcriber.request(first)
+    try await waitUntil { harness.calls.count == 1 && transcriber.current == nil }
+    transcriber.resumeAfterSetup()
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.calls == [first], "動作確認の最中の要求と取得後の再開で 2 回走らない")
+    #expect(
+      harness.notices == [
+        .setupRequired(meeting: "2026-11-06_101500"), .finished(meeting: "2026-11-06_101500"),
+      ])
+  }
+
   @Test func requestedTranscriptAppearsInListing() async throws {
     let harness = Harness()
     defer { harness.remove() }
