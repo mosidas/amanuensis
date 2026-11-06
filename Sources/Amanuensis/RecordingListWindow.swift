@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "recording")
@@ -78,17 +79,40 @@ private struct RecordingListContent: View {
       }
       listing = latest
     case .open:
-      guard NSWorkspace.shared.open(meeting.transcript) else {
-        logger.warning(
-          "transcript open failed error.type=open_failed app.error.origin=system folder.name=\(meeting.folder.lastPathComponent, privacy: .public)"
-        )
-        openFailed = true
-        listing = folder.meetings()
-        return
-      }
+      open(meeting)
     case .reveal:
       NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
     }
+  }
+
+  /// transcript.md を、ファイルの実体でなく `.md` の種類から決めたアプリへ文書として渡す。
+  /// 判定の後にリンクへ差し替えられても、LaunchServices はリンク先のアプリを起動しない(点検の実測)。
+  private func open(_ meeting: Meeting) {
+    guard RecordingFolder.isPlainFile(meeting.transcript) else {
+      failOpen(meeting, reason: "not_plain_file")
+      return
+    }
+    guard
+      let app = NSWorkspace.shared.urlForApplication(
+        toOpen: UTType(filenameExtension: "md") ?? .plainText)
+    else {
+      failOpen(meeting, reason: "no_application")
+      return
+    }
+    NSWorkspace.shared.open(
+      [meeting.transcript], withApplicationAt: app, configuration: .init()
+    ) { _, error in
+      guard error != nil else { return }
+      Task { @MainActor in failOpen(meeting, reason: "open_error") }
+    }
+  }
+
+  private func failOpen(_ meeting: Meeting, reason: StaticString) {
+    logger.warning(
+      "transcript open failed error.type=open_failed app.error.origin=system reason=\(reason, privacy: .public) folder.name=\(meeting.folder.lastPathComponent, privacy: .public)"
+    )
+    openFailed = true
+    listing = folder.meetings()
   }
 }
 

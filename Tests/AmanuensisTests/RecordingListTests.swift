@@ -91,6 +91,53 @@ private func names(_ listing: MeetingListing) -> [String]? {
   #expect(names(sandbox.folder().meetings()) == ["2026-11-06_101500"])
 }
 
+/// `url` に `target` を指す Finder エイリアスのファイルを書く。
+private func writeAlias(at url: URL, to target: URL) throws {
+  try URL.writeBookmarkData(target.bookmarkData(options: .suitableForBookmarkFile), to: url)
+}
+
+@Test func filesPlantedAsLinkAliasOrFIFOAreNotRecordingOrTranscript() throws {
+  let sandbox = try Sandbox()
+  defer { sandbox.remove() }
+  let app = sandbox.directory.appending(path: "X.app", directoryHint: .isDirectory)
+  try FileManager.default.createDirectory(at: app, withIntermediateDirectories: false)
+  let linked = try sandbox.meeting("2026-11-06_101500")
+  try FileManager.default.createSymbolicLink(
+    at: linked.appending(path: "transcript.md"), withDestinationURL: app)
+  let elsewhere = sandbox.directory.appending(path: "recording.caf")
+  try Data("x".utf8).write(to: elsewhere)
+  try FileManager.default.createSymbolicLink(
+    at: linked.appending(path: "recording.caf"), withDestinationURL: elsewhere)
+  let aliased = try sandbox.meeting("2026-11-06_110000")
+  try writeAlias(at: aliased.appending(path: "transcript.md"), to: app)
+  try #require(mkfifo(aliased.appending(path: "recording.caf").path, 0o644) == 0)
+
+  guard case .meetings(let meetings) = sandbox.folder().meetings() else {
+    Issue.record("保存先が読めれば .meetings")
+    return
+  }
+
+  #expect(meetings.map(\.hasRecording) == [false, false], "リンク・FIFO は録音なし")
+  #expect(meetings.map(\.hasTranscript) == [false, false], "リンク・エイリアスは文字起こしなし")
+}
+
+@Test func onlyPlainFileMayBeOpened() throws {
+  let sandbox = try Sandbox()
+  defer { sandbox.remove() }
+  let app = sandbox.directory.appending(path: "X.app", directoryHint: .isDirectory)
+  try FileManager.default.createDirectory(at: app, withIntermediateDirectories: false)
+  let meeting = try sandbox.meeting("2026-11-06_101500", files: ["transcript.md"])
+  let link = sandbox.root.appending(path: "link.md")
+  try FileManager.default.createSymbolicLink(at: link, withDestinationURL: app)
+  let alias = sandbox.root.appending(path: "alias.md")
+  try writeAlias(at: alias, to: app)
+
+  #expect(RecordingFolder.isPlainFile(meeting.appending(path: "transcript.md")), "通常ファイルは可")
+  #expect(!RecordingFolder.isPlainFile(link), "アプリへのシンボリックリンクは不可")
+  #expect(!RecordingFolder.isPlainFile(alias), "アプリへのエイリアスは不可")
+  #expect(!RecordingFolder.isPlainFile(sandbox.root.appending(path: "missing.md")), "存在しないものは不可")
+}
+
 @Test func chosenRootMissingIsRootMissing() throws {
   let sandbox = try Sandbox()
   defer { sandbox.remove() }

@@ -78,7 +78,7 @@ struct RecordingFolder {
 
   /// 保存先の直下の会議フォルダーを新しい順に返す。名前が `yyyy-MM-dd_HHmmss` の形でないもの・
   /// 実のディレクトリでないもの(ファイル・シンボリックリンク)は除く。呼ぶたびに読み直し、何も作らない。
-  // shortcut: 主スレッドで同期に読む(会議フォルダー数百で数 ms の見込み), 一覧を開くのが遅い報告があれば読み込みを Task に移す
+  // shortcut: 主スレッドで同期に読む(実測で会議フォルダー 1,000 個で 0.075 秒、保存先の項目 12 万で 3.0 秒), 一覧を開くのが遅い報告があれば読み込みを Task に移す
   func meetings() -> MeetingListing {
     let fileManager = FileManager.default
     let root = self.root
@@ -110,11 +110,19 @@ struct RecordingFolder {
       else { return nil }
       return Meeting(
         folder: folder, date: date,
-        hasRecording: fileManager.fileExists(atPath: folder.appending(path: "recording.caf").path),
-        hasTranscript: fileManager.fileExists(atPath: folder.appending(path: "transcript.md").path))
+        hasRecording: Self.isPlainFile(folder.appending(path: "recording.caf")),
+        hasTranscript: Self.isPlainFile(folder.appending(path: "transcript.md")))
     }
     logger.info("recordings listed result=ok count=\(meetings.count, privacy: .public)")
     return .meetings(meetings.sorted { $0.date > $1.date })
+  }
+
+  /// `url` が通常ファイルで、シンボリックリンクでも Finder エイリアスでもないなら true。読めなければ false。
+  /// 保存先の中身は他者が置いたリンク・エイリアス・FIFO でありうるため、開く・読む前にこれで確かめる。
+  /// エイリアスのファイルは通常ファイルでもあるので、リンクの判定だけでは足りない。
+  static func isPlainFile(_ url: URL) -> Bool {
+    let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isAliasFileKey])
+    return values?.isRegularFile == true && values?.isAliasFile == false
   }
 
   /// 会議フォルダーの名前が表す日時。名前が `yyyy-MM-dd_HHmmss` の形と完全に一致しなければ nil。
