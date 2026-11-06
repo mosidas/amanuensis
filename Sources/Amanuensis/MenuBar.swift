@@ -165,6 +165,7 @@ final class MenuBar: NSObject {
     case .start: item.action = #selector(start(_:))
     case .stop: item.action = #selector(stop(_:))
     case .discard: item.action = #selector(discard(_:))
+    case .recordings: item.action = #selector(openRecordings(_:))
     case .settings:
       item.action = #selector(openSettings(_:))
       item.keyEquivalent = ","
@@ -196,6 +197,10 @@ final class MenuBar: NSObject {
     NSApp.activate()
     guard alert.runModal() == .alertFirstButtonReturn else { return }
     Task { await recorder.discard() }
+  }
+
+  @objc private func openRecordings(_ sender: NSMenuItem) {
+    showRecordings()
   }
 
   @objc private func openSettings(_ sender: NSMenuItem) {

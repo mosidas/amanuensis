@@ -181,29 +181,31 @@ private struct MenuRow {
 }
 
 @Test @MainActor func menuMatchesTable() async throws {
+  let recordings = MenuContent.Entry.item("録音の一覧…", .recordings)
   let settings = MenuContent.Entry.item("設定…", .settings)
   let quit = MenuContent.Entry.item("amanuensis を終了", .quit)
   let rows = [
     MenuRow(
-      name: "idle", state: .idle, entries: [.item("録音を開始", .start), settings, .separator, quit]),
+      name: "idle", state: .idle,
+      entries: [.item("録音を開始", .start), recordings, settings, .separator, quit]),
     MenuRow(
       name: "starting", state: .starting,
-      entries: [.item("録音を準備しています…", nil), settings, .separator, quit]),
+      entries: [.item("録音を準備しています…", nil), recordings, settings, .separator, quit]),
     MenuRow(
       name: "recording-12s", state: nil, elapsed: 12,
       entries: [
-        .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), settings,
+        .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), recordings, settings,
         .separator, quit,
       ]),
     MenuRow(
       name: "recording-3725s", state: nil, elapsed: 3_725.9,
       entries: [
-        .item("録音中 1:02:05", nil), .item("停止", .stop), .item("破棄…", .discard), settings,
+        .item("録音中 1:02:05", nil), .item("停止", .stop), .item("破棄…", .discard), recordings, settings,
         .separator, quit,
       ]),
     MenuRow(
       name: "finishing", state: .finishing,
-      entries: [.item("録音を保存しています…", nil), settings, .separator, quit]),
+      entries: [.item("録音を保存しています…", nil), recordings, settings, .separator, quit]),
   ]
   for row in rows {
     if let state = row.state {

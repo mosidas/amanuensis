@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 import Testing
 
 @testable import Amanuensis
@@ -186,4 +187,128 @@ private func meeting(
       "録音中は待ち行列より優先する")
     #expect(MeetingStatus(of: a, recorder: state, queue: []) == .untranscribed, "別の行は録音中にならない")
   }
+}
+
+private let transcribeButton = MeetingButton(
+  label: "文字起こし", help: "録音から transcript.md を作ります。", action: .transcribe)
+private let openButton = MeetingButton(
+  label: "開く", help: "transcript.md を既定のアプリで開きます。", action: .open)
+private let revealButton = MeetingButton(
+  label: "Finder で表示", help: "会議のフォルダーを Finder で表示します。", action: .reveal)
+
+@Test func rowTextMatchesTable() {
+  let rows: [(MeetingStatus, MeetingRowDisplay)] = [
+    (.transcribed, .init(detail: "文字起こし済み", buttons: [openButton, revealButton])),
+    (.untranscribed, .init(detail: "文字起こしはまだありません", buttons: [transcribeButton, revealButton])),
+    (.transcribing, .init(detail: "文字起こししています…", buttons: [revealButton])),
+    (.queued, .init(detail: "文字起こしの順番を待っています", buttons: [revealButton])),
+    (.recording, .init(detail: "録音中", buttons: [revealButton])),
+    (.recordingMissing, .init(detail: "録音のファイルがありません", buttons: [revealButton])),
+  ]
+  for (status, display) in rows {
+    #expect(RecordingListText.row(for: status) == display, "\(status)")
+  }
+  for status in [MeetingStatus.transcribing, .queued] {
+    #expect(
+      !RecordingListText.row(for: status).buttons.contains { $0.action == .transcribe },
+      "\(status) の行で文字起こしを二重に始められない")
+  }
+}
+
+@Test func meetingTitleIsJapaneseDateAndTime() throws {
+  let date = try #require(RecordingFolder.meetingDate(named: "2026-11-06_101500"))
+  #expect(RecordingListText.title(for: date) == "2026年11月6日(金) 10:15")
+}
+
+@Test func emptyTextMatchesTable() {
+  let noRecordings = "メニューの「録音を開始」で録音すると、ここに表示します。"
+  let rows: [(MeetingListing, MeetingListEmpty?)] = [
+    (.meetings([]), .init(title: "まだ録音がありません", body: noRecordings, opensSettings: false)),
+    (
+      .rootMissing(isStandard: true),
+      .init(title: "まだ録音がありません", body: noRecordings + "保存先は設定で変えられます。", opensSettings: true)
+    ),
+    (
+      .rootMissing(isStandard: false),
+      .init(
+        title: "保存先のフォルダーが見つかりません", body: "設定で保存先を選び直してから、一覧を開き直してください。",
+        opensSettings: true)
+    ),
+    (
+      .unreadable,
+      .init(
+        title: "保存先のフォルダーを読み込めません",
+        body: "フォルダーのアクセス権を確かめるか、設定で別の保存先を選んでから、一覧を開き直してください。", opensSettings: true)
+    ),
+    (.meetings([meeting("2026-11-06_101500")]), nil),
+  ]
+  for (listing, empty) in rows {
+    #expect(RecordingListText.empty(for: listing) == empty, "\(listing)")
+  }
+  #expect(RecordingListText.openFailed.title == "文字起こしを開けませんでした")
+  #expect(RecordingListText.openFailed.body == "transcript.md が移動か削除されています。一覧を読み直しました。")
+}
+
+@Test func transcribeStartsOnlyForMeetingStillUntranscribed() {
+  let untranscribed = meeting("2026-11-06_101500")
+  let nowTranscribed = meeting("2026-11-06_101500", hasTranscript: true)
+  let other = meeting("2026-11-05_090000")
+  let rows: [(MeetingListing, [URL], Bool, String)] = [
+    (.meetings([untranscribed, other]), [], true, "押した時点でも文字起こし前なら始める"),
+    (.meetings([nowTranscribed, other]), [], false, "古い行から押しても済みの transcript.md を上書きしない"),
+    (.meetings([untranscribed]), [other.folder, untranscribed.folder], false, "順番待ちなら入れ直さない"),
+    (.meetings([other]), [], false, "フォルダーが消えていれば始めない"),
+    (.unreadable, [], false, "保存先を読めなければ始めない"),
+  ]
+  for (listing, queue, expected, reason) in rows {
+    #expect(
+      shouldTranscribe(untranscribed.folder, in: listing, recorder: .idle, queue: queue)
+        == expected, "\(reason)")
+  }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_SNAPSHOT_DIR"] != nil))
+@MainActor func writeRecordingListSnapshots() async throws {
+  _ = NSApplication.shared
+  let directory = URL(
+    filePath: try #require(ProcessInfo.processInfo.environment["AMANUENSIS_SNAPSHOT_DIR"]))
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  let transcribing = meeting("2026-11-06_101500")
+  let queued = meeting("2026-11-05_160000")
+  let done = meeting("2026-11-05_093000", hasTranscript: true)
+  let untranscribed = meeting("2026-11-04_140000")
+  let noAudio = meeting("2026-11-03_110000", hasRecording: false)
+  let queue = [transcribing.folder, queued.folder]
+
+  func write(
+    _ name: String, _ listing: MeetingListing, recorder: RecorderState = .idle,
+    openFailed: Bool = false
+  ) throws {
+    for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+      try writeSnapshot(
+        RecordingListView(
+          listing: listing, recorder: recorder, queue: queue, openFailed: openFailed,
+          perform: { _, _ in }, openSettings: {}
+        )
+        .frame(width: 520, height: 360)
+        .background(Color(nsColor: .windowBackgroundColor)),
+        height: 360, appearance: appearance,
+        to: directory.appending(path: "list-\(name)-\(suffix).png"))
+    }
+  }
+
+  try await withRecording { state, _ in
+    guard case .recording(let recording) = state else { return }
+    let live = Meeting(
+      folder: recording.folder, date: RecordingFolder.meetingDate(named: "2026-11-06_143000")!,
+      hasRecording: true, hasTranscript: false)
+    try write(
+      "mixed", .meetings([live, transcribing, queued, done, untranscribed, noAudio]),
+      recorder: state)
+  }
+  try write("empty", .meetings([]))
+  try write("standard-root-missing", .rootMissing(isStandard: true))
+  try write("root-missing", .rootMissing(isStandard: false))
+  try write("unreadable", .unreadable)
+  try write("open-failed", .meetings([done, untranscribed, noAudio]), openFailed: true)
 }
