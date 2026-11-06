@@ -25,3 +25,11 @@ enum TranscriptionText {
     }
   }
 }
+
+extension MenuContent {
+  /// 文字起こし中の録音の行。メニューの先頭に置く。
+  static func transcriptionEntries(for meeting: URL?) -> [Entry] {
+    guard let meeting else { return [] }
+    return [.item("\(meeting.lastPathComponent) を文字起こししています…", nil), .separator]
+  }
+}

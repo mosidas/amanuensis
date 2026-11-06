@@ -101,8 +101,14 @@ enum MenuContent {
     return head + [.item("設定…", .settings), .separator, .item("amanuensis を終了", .quit)]
   }
 
-  static func accessibilityName(for state: RecorderState) -> String {
-    if case .recording = state { "amanuensis(録音中)" } else { "amanuensis" }
+  static func accessibilityName(for state: RecorderState, transcribing: Bool) -> String {
+    if case .recording = state {
+      "amanuensis(録音中)"
+    } else if transcribing {
+      "amanuensis(文字起こし中)"
+    } else {
+      "amanuensis"
+    }
   }
 
   private static func elapsed(from start: Date, to now: Date) -> String {

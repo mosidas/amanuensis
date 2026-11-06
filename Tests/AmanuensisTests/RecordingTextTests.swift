@@ -219,12 +219,12 @@ private struct MenuRow {
 }
 
 @Test @MainActor func iconShowsRecording() async throws {
-  let idle = MenuBar.icon(for: .idle, resources: repoResources)
+  let idle = MenuBar.icon(for: .idle, transcribing: false, resources: repoResources)
   #expect(idle.isTemplate)
   #expect(idle.representations.contains { $0 is NSPDFImageRep }, "待機時は羽根ペンの PDF")
   #expect(idle.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    let recording = MenuBar.icon(for: state, resources: repoResources)
+    let recording = MenuBar.icon(for: state, transcribing: false, resources: repoResources)
     #expect(recording.isTemplate)
     #expect(!recording.representations.contains { $0 is NSPDFImageRep }, "録音中は待機時の PDF でない")
     let bitmaps = recording.representations.compactMap { $0 as? NSBitmapImageRep }
@@ -247,17 +247,32 @@ private struct MenuRow {
   }
 }
 
+@Test @MainActor func iconShowsTranscribing() async throws {
+  let transcribing = MenuBar.icon(for: .idle, transcribing: true, resources: repoResources)
+  #expect(transcribing.isTemplate)
+  #expect(
+    !transcribing.representations.contains { $0 is NSPDFImageRep }, "文字起こし中は待機時の PDF でない")
+  #expect(transcribing.tiffRepresentation == symbolPixels("pencil.and.scribble"))
+  #expect(transcribing.accessibilityDescription == "amanuensis(文字起こし中)")
+  try await withRecording { state, _ in
+    let recording = MenuBar.icon(for: state, transcribing: true, resources: repoResources)
+    let bitmaps = recording.representations.compactMap { $0 as? NSBitmapImageRep }
+    #expect(Set(bitmaps.map(\.pixelsWide)) == [18, 36], "録音中は文字起こし中でも録音の TIFF")
+    #expect(recording.accessibilityDescription == "amanuensis(録音中)")
+  }
+}
+
 @Test @MainActor func iconFallsBackWithoutPDF() async throws {
   let empty = FileManager.default.temporaryDirectory.appending(
     path: "RecordingTextTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: empty) }
-  let image = MenuBar.icon(for: .idle, resources: empty)
+  let image = MenuBar.icon(for: .idle, transcribing: false, resources: empty)
   #expect(image.isTemplate)
   #expect(!image.representations.contains { $0 is NSPDFImageRep }, "PDF が無ければ SF Symbol")
   #expect(image.accessibilityDescription == "amanuensis")
   try await withRecording { state, _ in
-    let recording = MenuBar.icon(for: state, resources: empty)
+    let recording = MenuBar.icon(for: state, transcribing: false, resources: empty)
     #expect(recording.isTemplate)
     #expect(
       !recording.representations.contains {

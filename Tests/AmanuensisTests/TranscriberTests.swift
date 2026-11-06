@@ -284,4 +284,11 @@ private let noticeRows = [
     #expect(TranscriptionText.title(for: row.notice) == row.title)
     #expect(TranscriptionText.body(for: row.notice) == row.body)
   }
+
+  @Test func menuShowsTranscribingMeeting() {
+    #expect(
+      MenuContent.transcriptionEntries(for: URL(filePath: "/x/2026-11-06_101500"))
+        == [.item("2026-11-06_101500 を文字起こししています…", nil), .separator])
+    #expect(MenuContent.transcriptionEntries(for: nil) == [])
+  }
 }

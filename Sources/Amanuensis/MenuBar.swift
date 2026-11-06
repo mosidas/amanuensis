@@ -21,26 +21,31 @@ final class MenuBar: NSObject {
     observe()
   }
 
-  /// 状態に応じたメニューバーのアイコン。録音中は `resources` の羽根ペンを抜いた円の TIFF、それ以外は羽根ペンの PDF。
+  /// 状態に応じたメニューバーのアイコン。録音中は `resources` の羽根ペンを抜いた円の TIFF、録音中でなく文字起こし中は
+  /// `pencil.and.scribble`、それ以外は羽根ペンの PDF。
   /// 画像を読めないとき(`swift run`・同梱漏れ)は `waveform` にして、メニューバーの項目を消さない。
-  static func icon(for state: RecorderState, resources: URL?) -> NSImage {
-    let file =
-      switch state {
-      case .recording: "MenuBarIconRecording.tiff"
-      default: "MenuBarIcon.pdf"
+  static func icon(for state: RecorderState, transcribing: Bool, resources: URL?) -> NSImage {
+    let image =
+      switch (state, transcribing) {
+      case (.recording, _): bundledIcon("MenuBarIconRecording.tiff", in: resources)
+      case (_, true):
+        NSImage(systemSymbolName: "pencil.and.scribble", accessibilityDescription: nil)!
+      default: bundledIcon("MenuBarIcon.pdf", in: resources)
       }
-    let image: NSImage
-    if let url = resources?.appending(path: file), let loaded = NSImage(contentsOf: url) {
-      image = loaded
-    } else {
-      logger.error(
-        "menubar icon missing error.type=menubar_icon_missing app.error.origin=system file=\(file, privacy: .public)"
-      )
-      image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)!
-    }
     image.isTemplate = true
-    image.accessibilityDescription = MenuContent.accessibilityName(for: state)
+    image.accessibilityDescription = MenuContent.accessibilityName(
+      for: state, transcribing: transcribing)
     return image
+  }
+
+  private static func bundledIcon(_ file: String, in resources: URL?) -> NSImage {
+    if let url = resources?.appending(path: file), let loaded = NSImage(contentsOf: url) {
+      return loaded
+    }
+    logger.error(
+      "menubar icon missing error.type=menubar_icon_missing app.error.origin=system file=\(file, privacy: .public)"
+    )
+    return NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)!
   }
 
   /// 失敗を利用者に伝える。権限の不足と開始の失敗は警告で、それ以外は通知で伝える。
@@ -112,19 +117,20 @@ final class MenuBar: NSObject {
   }
 
   private func observe() {
-    let state = withObservationTracking {
-      recorder.state
+    let (state, transcribing) = withObservationTracking {
+      (recorder.state, transcriber.current)
     } onChange: {
       Task { @MainActor [weak self] in self?.observe() }
     }
-    render(state)
+    render(state, transcribing: transcribing)
   }
 
-  private func render(_ state: RecorderState) {
-    statusItem.button?.image = Self.icon(for: state, resources: Bundle.main.resourceURL)
+  private func render(_ state: RecorderState, transcribing: URL?) {
+    statusItem.button?.image = Self.icon(
+      for: state, transcribing: transcribing != nil, resources: Bundle.main.resourceURL)
 
     menu.removeAllItems()
-    for entry in MenuContent.entries(for: state, now: .now) {
+    for entry in entries(for: state, transcribing: transcribing) {
       menu.addItem(item(for: entry))
     }
 
@@ -141,9 +147,15 @@ final class MenuBar: NSObject {
 
   /// 経過時間の行の題だけを今の時刻で書き直す。行の並びは状態が変わるまで変わらない。
   private func tick() {
-    for (item, entry) in zip(menu.items, MenuContent.entries(for: recorder.state, now: .now)) {
+    for (item, entry) in zip(
+      menu.items, entries(for: recorder.state, transcribing: transcriber.current))
+    {
       if case .item(let title, _) = entry { item.title = title }
     }
+  }
+
+  private func entries(for state: RecorderState, transcribing: URL?) -> [MenuContent.Entry] {
+    MenuContent.transcriptionEntries(for: transcribing) + MenuContent.entries(for: state, now: .now)
   }
 
   private func item(for entry: MenuContent.Entry) -> NSMenuItem {
