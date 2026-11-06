@@ -43,6 +43,12 @@ private let startedNotice = [
 
 enum UserEnding: CaseIterable { case stop, discard }
 
+enum StoredSetting: Sendable {
+  case none
+  case bool(Bool)
+  case string(String)
+}
+
 // RecorderTests はスリープの抑止をプロセス全体で数えるため、録音するテストはその直列の下に置く。
 extension RecorderTests {
   @Suite @MainActor struct MeetingWatcherTests {
@@ -90,13 +96,24 @@ extension RecorderTests {
         ])
     }
 
-    @Test func brokenSettingFallsBackToAutoRecord() throws {
+    @Test(arguments: [
+      (StoredSetting.none, true), (.bool(true), true), (.bool(false), false),
+      (.string("no"), false),
+      (.string("garbage"), false),
+    ])
+    func autoRecordIsOnOnlyWithoutStoredValueOrWhenTrue(stored: StoredSetting, expected: Bool)
+      throws
+    {
       let harness = try RecorderHarness()
       defer { harness.remove() }
       let defaults = try #require(UserDefaults(suiteName: harness.suiteName))
-      defaults.set("no", forKey: "autoRecordMeetings")
+      switch stored {
+      case .none: break
+      case .bool(let value): defaults.set(value, forKey: "autoRecordMeetings")
+      case .string(let value): defaults.set(value, forKey: "autoRecordMeetings")
+      }
 
-      #expect(MeetingDetectionSetting(defaults: defaults).autoRecord, "Bool でない保存値は既定のオン")
+      #expect(MeetingDetectionSetting(defaults: defaults).autoRecord == expected)
     }
 
     @Test func startFailureReportsOnceAndDoesNotRetryDuringMeeting() async throws {
@@ -192,6 +209,23 @@ extension RecorderTests {
       #expect(fixture.harness.captureCalls == 2)
       #expect(fixture.notifications == [startedNotice, startedNotice])
       #expect(fixture.harness.reports.isEmpty)
+    }
+
+    @Test func autoRecordingStopsWhenMeetingEndedWhilePermissionWasDenied() async throws {
+      let fixture = try Fixture()
+      defer { fixture.harness.remove() }
+      await fixture.tick(zoomInUse, at: 0)
+
+      fixture.denied = [.systemAudio]
+      await fixture.tick(zoomInUse, at: 2)
+      await fixture.tick([], at: 4)
+      fixture.denied = []
+      for second in stride(from: 6, through: 120, by: 2) {
+        await fixture.tick([], at: second)
+      }
+
+      #expect(fixture.recorder.state.activity == .idle, "権限が戻った後、終わった会議の自動録音を止める")
+      #expect(fixture.harness.captureCalls == 1)
     }
 
     @Test func readsAudioProcessesWithoutThrowing() {

@@ -59,9 +59,10 @@ struct MeetingDetectionSetting {
     self.defaults = defaults
   }
 
-  /// 保存値が Bool でなければ(`defaults write` で壊された値を含む)既定のオン。
+  /// 保存値が無ければ既定のオン。保存値は `UserDefaults.bool(forKey:)` の解釈に従い、
+  /// 文字列の "no" や解釈できない値はオフ(`defaults write` で `-bool` を付けずに書いた値を含む)。
   var autoRecord: Bool {
-    defaults.object(forKey: Self.key) as? Bool ?? true
+    defaults.object(forKey: Self.key) == nil ? true : defaults.bool(forKey: Self.key)
   }
 
   func setAutoRecord(_ autoRecord: Bool) {
@@ -136,7 +137,8 @@ enum MeetingText {
   }
 
   /// 1 回観測して判定し、指示を実行する。観測に失敗した回と、録音の権限が拒否されている回は判定しない。
-  /// 拒否から戻った回は、続いている会議を新しい会議として扱う。
+  /// 拒否の間は、自動の録音中でなければ検知の状態を捨てる。このため拒否から戻った回は、続いている会議を新しい会議として扱う。
+  /// 自動の録音中は状態を保ち、拒否の間に会議が終わっていれば戻った回に録音を止める。
   func tick(now: ContinuousClock.Instant) async {
     let denied = deniedPermissions()
     if denied != blockedBy {
@@ -150,7 +152,7 @@ enum MeetingText {
       blockedBy = denied
     }
     guard denied.isEmpty else {
-      detector = MeetingDetector()
+      if recorder.state.activity != .recording(.meeting) { detector = MeetingDetector() }
       return
     }
     let processes: [AudioProcess]

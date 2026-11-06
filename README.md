@@ -3,7 +3,7 @@ A macOS menu bar app that detects web meetings, records them, and transcribes Ja
 
 ## Meeting detection
 
-Every 2 seconds, amanuensis reads Core Audio's per-process audio state A meeting is in progress while a process of one of these apps uses microphone input. Helper processes whose bundle ID starts with the app's bundle ID followed by `.` count as the app.
+Every 2 seconds, amanuensis reads Core Audio's per-process audio state. A meeting is in progress while a process of one of these apps uses microphone input. Helper processes whose bundle ID starts with the app's bundle ID followed by `.` count as the app.
 
 | Meeting | Bundle ID |
 | :-- | :-- |
