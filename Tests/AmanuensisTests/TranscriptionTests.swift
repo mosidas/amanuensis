@@ -226,51 +226,55 @@ private func samples(of url: URL) throws -> (values: [Float], rate: Double, chan
   )
 }
 
-@Test func monoChunksCutInSilenceAndAverageChannels() throws {
-  let directory = try temporaryDirectory("chunks")
-  let audio = directory.appending(path: "recording.caf")
-  let silent = [44.5...45.5, 99.5...100.5]
-  try writeStereoCAF(to: audio, seconds: 130) { t in
-    silent.contains { $0.contains(t) } ? 0 : sine(t)
+// 長い録音の合成と変換はデバッグビルドで重く、並列に動くと協調スレッド(CI では 3 本)を全部埋めて、
+// 実時間の上限を持つ他のテストが落ちる。長い録音のテストは同時に 1 件だけ動かす。
+@Suite(.serialized) struct LongRecordingTests {
+  @Test func monoChunksCutInSilenceAndAverageChannels() throws {
+    let directory = try temporaryDirectory("chunks")
+    let audio = directory.appending(path: "recording.caf")
+    let silent = [44.5...45.5, 99.5...100.5]
+    try writeStereoCAF(to: audio, seconds: 130) { t in
+      silent.contains { $0.contains(t) } ? 0 : sine(t)
+    }
+
+    let (chunks, duration) = try writeMonoChunks(of: audio, to: directory)
+
+    #expect(abs(duration - 130) < 0.001)
+    #expect(chunks.count == 3)
+    var expectedOffset = 0.0
+    for (index, chunk) in chunks.enumerated() {
+      #expect(chunk.file.lastPathComponent == String(format: "chunk-%04d.wav", index + 1))
+      #expect(abs(chunk.offset - expectedOffset) < 0.001, "区間の先頭は前の区間の終わり")
+      let (values, rate, channels) = try samples(of: chunk.file)
+      #expect(rate == 16_000)
+      #expect(channels == 1)
+      #expect(Double(values.count) / rate <= 60, "区間は 60 秒以下")
+      let peak = values.map(abs).max() ?? 0
+      #expect(abs(peak - 0.25) < 0.001, "左右の平均で右の振幅 0.5 の半分")
+      expectedOffset += Double(values.count) / rate
+    }
+    #expect(abs(expectedOffset - duration) < 0.001, "区間の長さの和が録音の長さ")
+    for (chunk, range) in zip(chunks.dropFirst(), silent) {
+      #expect(range.contains(chunk.offset), "切れ目 \(chunk.offset) が無音の中")
+    }
   }
 
-  let (chunks, duration) = try writeMonoChunks(of: audio, to: directory)
+  @Test func wholeMonoFileIsChunksJoined() throws {
+    let directory = try temporaryDirectory("whole")
+    let audio = directory.appending(path: "recording.caf")
+    try writeStereoCAF(to: audio, seconds: 130) { t in
+      (44.5...45.5).contains(t) || (99.5...100.5).contains(t) ? 0 : sine(t)
+    }
+    let whole = directory.appending(path: "whole.wav")
 
-  #expect(abs(duration - 130) < 0.001)
-  #expect(chunks.count == 3)
-  var expectedOffset = 0.0
-  for (index, chunk) in chunks.enumerated() {
-    #expect(chunk.file.lastPathComponent == String(format: "chunk-%04d.wav", index + 1))
-    #expect(abs(chunk.offset - expectedOffset) < 0.001, "区間の先頭は前の区間の終わり")
-    let (values, rate, channels) = try samples(of: chunk.file)
+    let (chunks, _) = try writeMonoChunks(of: audio, to: directory, whole: whole)
+
+    let (values, rate, channels) = try samples(of: whole)
     #expect(rate == 16_000)
     #expect(channels == 1)
-    #expect(Double(values.count) / rate <= 60, "区間は 60 秒以下")
-    let peak = values.map(abs).max() ?? 0
-    #expect(abs(peak - 0.25) < 0.001, "左右の平均で右の振幅 0.5 の半分")
-    expectedOffset += Double(values.count) / rate
+    #expect(values.count == 130 * 16_000, "全体のフレーム数が録音のフレーム数")
+    #expect(values == (try chunks.flatMap { try samples(of: $0.file).values }), "全体は区間をつないだもの")
   }
-  #expect(abs(expectedOffset - duration) < 0.001, "区間の長さの和が録音の長さ")
-  for (chunk, range) in zip(chunks.dropFirst(), silent) {
-    #expect(range.contains(chunk.offset), "切れ目 \(chunk.offset) が無音の中")
-  }
-}
-
-@Test func wholeMonoFileIsChunksJoined() throws {
-  let directory = try temporaryDirectory("whole")
-  let audio = directory.appending(path: "recording.caf")
-  try writeStereoCAF(to: audio, seconds: 130) { t in
-    (44.5...45.5).contains(t) || (99.5...100.5).contains(t) ? 0 : sine(t)
-  }
-  let whole = directory.appending(path: "whole.wav")
-
-  let (chunks, _) = try writeMonoChunks(of: audio, to: directory, whole: whole)
-
-  let (values, rate, channels) = try samples(of: whole)
-  #expect(rate == 16_000)
-  #expect(channels == 1)
-  #expect(values.count == 130 * 16_000, "全体のフレーム数が録音のフレーム数")
-  #expect(values == (try chunks.flatMap { try samples(of: $0.file).values }), "全体は区間をつないだもの")
 }
 
 @Test func noWholeFileWithoutWholeURL() throws {
@@ -409,37 +413,39 @@ private func transcript(of meeting: URL) throws -> String {
   try String(contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
 }
 
-@Test func transcribeWritesTranscriptWithHeaderAndOffsetTimes() async throws {
-  let meeting = try meetingFolder()
-  let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
-  let installation = try fakeInstallation(twoWordsPerChunk)
+extension LongRecordingTests {
+  @Test func transcribeWritesTranscriptWithHeaderAndOffsetTimes() async throws {
+    let meeting = try meetingFolder()
+    let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
+    let installation = try fakeInstallation(twoWordsPerChunk)
 
-  try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
 
-  #expect(try transcript(of: meeting) == unlabeledTranscript)
-  let args = try arguments(installation)
-  #expect(
-    Array(args.prefix(5)) == [
-      "asr", installation.modelFile.path, "--timestamps", "--format", "json",
-    ])
-  let chunkPaths = args.dropFirst(5)
-  #expect(chunkPaths.count == 2)
-  #expect(chunkPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) }, "一時の区間を消す")
-  #expect(
-    try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
-}
+    #expect(try transcript(of: meeting) == unlabeledTranscript)
+    let args = try arguments(installation)
+    #expect(
+      Array(args.prefix(5)) == [
+        "asr", installation.modelFile.path, "--timestamps", "--format", "json",
+      ])
+    let chunkPaths = args.dropFirst(5)
+    #expect(chunkPaths.count == 2)
+    #expect(chunkPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) }, "一時の区間を消す")
+    #expect(
+      try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
+  }
 
-@Test func transcribeOfSilentSpeechSaysNoUtterance() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(
-    #"for a in "$@"; do case "$a" in *.wav) printf '{"file":"%s","tokens":[]}\n' "$a";; esac; done"#
-  )
+  @Test func transcribeOfSilentSpeechSaysNoUtterance() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(
+      #"for a in "$@"; do case "$a" in *.wav) printf '{"file":"%s","tokens":[]}\n' "$a";; esac; done"#
+    )
 
-  try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
 
-  let transcript = try String(
-    contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
-  #expect(transcript.hasSuffix("- モデル: Haas-616M-ja-v1.0-Q8_0.gguf\n\n発話はありませんでした。\n"))
+    let transcript = try String(
+      contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
+    #expect(transcript.hasSuffix("- モデル: Haas-616M-ja-v1.0-Q8_0.gguf\n\n発話はありませんでした。\n"))
+  }
 }
 
 private func transcriptionFailure(
@@ -486,134 +492,139 @@ private let twoSpeakers = #"""
   printf '{"file":"%s","segments":[{"start":0.5,"end":2.0,"speaker":0},{"start":3.5,"end":5.0,"speaker":1},{"start":50.5,"end":52.5,"speaker":0},{"start":53.5,"end":55.5,"speaker":1}]}\n' "$5"
   """#
 
-@Test func transcribeLabelsParagraphsWithSpeakers() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(diarize: twoSpeakers)
+extension LongRecordingTests {
+  @Test func transcribeLabelsParagraphsWithSpeakers() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(diarize: twoSpeakers)
 
-  let skip = try await transcribe(
-    meeting: meeting, installation: installation, separateSpeakers: true)
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: true)
 
-  #expect(skip == nil)
-  #expect(
-    try transcript(of: meeting) == """
-      # 会議の文字起こし
+    #expect(skip == nil)
+    #expect(
+      try transcript(of: meeting) == """
+        # 会議の文字起こし
 
-      - 日時: 2026-11-06 10:15:00
-      - 録音の長さ: 00:01:10
-      - モデル: Haas-616M-ja-v1.0-Q8_0.gguf
+        - 日時: 2026-11-06 10:15:00
+        - 録音の長さ: 00:01:10
+        - モデル: Haas-616M-ja-v1.0-Q8_0.gguf
 
-      [00:00:01] 話者 1: こんにちは
+        [00:00:01] 話者 1: こんにちは
 
-      [00:00:04] 話者 2: さようなら
+        [00:00:04] 話者 2: さようなら
 
-      [00:00:51] 話者 1: こんにちは
+        [00:00:51] 話者 1: こんにちは
 
-      [00:00:54] 話者 2: さようなら
+        [00:00:54] 話者 2: さようなら
 
-      """)
-  let args = try #require(diarizeArguments(installation))
-  #expect(
-    Array(args.prefix(4)) == [
-      "diarize", installation.diarizationModelFile.path, "--format", "json",
+        """)
+    let args = try #require(diarizeArguments(installation))
+    #expect(
+      Array(args.prefix(4)) == [
+        "diarize", installation.diarizationModelFile.path, "--format", "json",
+      ])
+    #expect(args.count == 5)
+    #expect(args.last?.hasSuffix("/whole.wav") == true)
+    #expect(!FileManager.default.fileExists(atPath: args[4]), "全体の WAVE を消す")
+  }
+
+  @Test func transcribeWithSpeakersOffWritesUnlabeledTranscriptWithoutDiarize() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(diarize: twoSpeakers)
+
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: false)
+
+    #expect(skip == nil)
+    #expect(try transcript(of: meeting) == unlabeledTranscript)
+    #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
+  }
+
+  @Test func transcribeWithoutDiarizationModelWritesUnlabeledTranscript() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(diarize: twoSpeakers, withModel: false)
+
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: true)
+
+    #expect(skip == .modelMissing)
+    #expect(try transcript(of: meeting) == unlabeledTranscript)
+    #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
+  }
+
+  @Test(
+    arguments: [
+      (
+        #"echo "$HOME/broken" >&2; exit 1"#,
+        "speakers failed error.type=exited status=1 stderr=~/broken"
+      ),
+      ("echo 'not json'", "speakers failed error.type=unparsable_output"),
+      (#"printf '{"file":"%s","segments":[]}\n' "$5""#, "speakers failed error.type=no_segments"),
     ])
-  #expect(args.count == 5)
-  #expect(args.last?.hasSuffix("/whole.wav") == true)
-  #expect(!FileManager.default.fileExists(atPath: args[4]), "全体の WAVE を消す")
-}
+  func diarizeFailureWritesUnlabeledTranscript(diarize: String, logLine: String) async throws {
+    let meeting = try meetingFolder()
+    let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
+    let installation = try fakeInstallation(diarize: diarize)
 
-@Test func transcribeWithSpeakersOffWritesUnlabeledTranscriptWithoutDiarize() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(diarize: twoSpeakers)
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: true)
 
-  let skip = try await transcribe(
-    meeting: meeting, installation: installation, separateSpeakers: false)
+    #expect(skip == .failed)
+    #expect(try transcript(of: meeting) == unlabeledTranscript)
+    let lines = try log(of: meeting).split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(lines.first?.contains(" " + logLine) == true, "\(lines)")
+    #expect(!(try log(of: meeting)).contains(NSHomeDirectory()), "ホームのパスを出さない")
+    #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
+    let whole = try #require(diarizeArguments(installation)?.last)
+    #expect(!FileManager.default.fileExists(atPath: whole), "失敗でも全体の WAVE を消す")
+  }
 
-  #expect(skip == nil)
-  #expect(try transcript(of: meeting) == unlabeledTranscript)
-  #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
-}
+  @Test func speechExitFailureIsLoggedAndKeepsRecording() async throws {
+    let meeting = try meetingFolder()
+    let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
+    let installation = try fakeInstallation("echo broken >&2; exit 3")
 
-@Test func transcribeWithoutDiarizationModelWritesUnlabeledTranscript() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(diarize: twoSpeakers, withModel: false)
+    #expect(
+      await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed
+    )
 
-  let skip = try await transcribe(
-    meeting: meeting, installation: installation, separateSpeakers: true)
+    #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording)
+    #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
+    let lines = try log(of: meeting).split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(
+      lines.first?.hasSuffix(" transcription failed error.type=exited status=3 stderr=broken\\n")
+        == true)
+    let chunkPaths = try arguments(installation).dropFirst(5)
+    #expect(!chunkPaths.isEmpty)
+    #expect(chunkPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) }, "失敗でも一時の区間を消す")
+  }
 
-  #expect(skip == .modelMissing)
-  #expect(try transcript(of: meeting) == unlabeledTranscript)
-  #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
-}
+  @Test func speechStderrInLogHasNoHomePath() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(#"echo "$HOME/x" >&2; exit 1"#)
 
-@Test(
-  arguments: [
-    (
-      #"echo "$HOME/broken" >&2; exit 1"#,
-      "speakers failed error.type=exited status=1 stderr=~/broken"
-    ),
-    ("echo 'not json'", "speakers failed error.type=unparsable_output"),
-    (#"printf '{"file":"%s","segments":[]}\n' "$5""#, "speakers failed error.type=no_segments"),
-  ])
-func diarizeFailureWritesUnlabeledTranscript(diarize: String, logLine: String) async throws {
-  let meeting = try meetingFolder()
-  let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
-  let installation = try fakeInstallation(diarize: diarize)
+    #expect(
+      await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed
+    )
 
-  let skip = try await transcribe(
-    meeting: meeting, installation: installation, separateSpeakers: true)
+    let contents = try log(of: meeting)
+    #expect(contents.contains("stderr=~/x"))
+    #expect(!contents.contains(NSHomeDirectory()), "ホームのパスを出さない")
+  }
 
-  #expect(skip == .failed)
-  #expect(try transcript(of: meeting) == unlabeledTranscript)
-  let lines = try log(of: meeting).split(separator: "\n")
-  #expect(lines.count == 1)
-  #expect(lines.first?.contains(" " + logLine) == true, "\(lines)")
-  #expect(!(try log(of: meeting)).contains(NSHomeDirectory()), "ホームのパスを出さない")
-  #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
-  let whole = try #require(diarizeArguments(installation)?.last)
-  #expect(!FileManager.default.fileExists(atPath: whole), "失敗でも全体の WAVE を消す")
-}
+  @Test func nonJSONOutputIsRecognitionFailure() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation("echo 'not json'")
 
-@Test func speechExitFailureIsLoggedAndKeepsRecording() async throws {
-  let meeting = try meetingFolder()
-  let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
-  let installation = try fakeInstallation("echo broken >&2; exit 3")
+    #expect(
+      await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed
+    )
 
-  #expect(
-    await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed)
-
-  #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording)
-  #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
-  let lines = try log(of: meeting).split(separator: "\n")
-  #expect(lines.count == 1)
-  #expect(
-    lines.first?.hasSuffix(" transcription failed error.type=exited status=3 stderr=broken\\n")
-      == true)
-  let chunkPaths = try arguments(installation).dropFirst(5)
-  #expect(!chunkPaths.isEmpty)
-  #expect(chunkPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) }, "失敗でも一時の区間を消す")
-}
-
-@Test func speechStderrInLogHasNoHomePath() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(#"echo "$HOME/x" >&2; exit 1"#)
-
-  #expect(
-    await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed)
-
-  let contents = try log(of: meeting)
-  #expect(contents.contains("stderr=~/x"))
-  #expect(!contents.contains(NSHomeDirectory()), "ホームのパスを出さない")
-}
-
-@Test func nonJSONOutputIsRecognitionFailure() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation("echo 'not json'")
-
-  #expect(
-    await transcriptionFailure(meeting: meeting, installation: installation) == .recognitionFailed)
-
-  #expect(try log(of: meeting).contains(" transcription failed error.type=unparsable_output"))
-  #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
+    #expect(try log(of: meeting).contains(" transcription failed error.type=unparsable_output"))
+    #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
+  }
 }
 
 @Test func missingRecordingIsAudioUnreadable() async throws {
@@ -625,17 +636,19 @@ func diarizeFailureWritesUnlabeledTranscript(diarize: String, logLine: String) a
   #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
 }
 
-@Test func unwritableMeetingFolderIsSaveFailed() async throws {
-  let meeting = try meetingFolder()
-  let installation = try fakeInstallation(twoWordsPerChunk)
-  try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: meeting.path)
-  defer {
-    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: meeting.path)
-    try? FileManager.default.removeItem(at: meeting)
-  }
+extension LongRecordingTests {
+  @Test func unwritableMeetingFolderIsSaveFailed() async throws {
+    let meeting = try meetingFolder()
+    let installation = try fakeInstallation(twoWordsPerChunk)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: meeting.path)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: meeting.path)
+      try? FileManager.default.removeItem(at: meeting)
+    }
 
-  #expect(await transcriptionFailure(meeting: meeting, installation: installation) == .saveFailed)
-  #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
+    #expect(await transcriptionFailure(meeting: meeting, installation: installation) == .saveFailed)
+    #expect(!FileManager.default.fileExists(atPath: meeting.appending(path: "transcript.md").path))
+  }
 }
 
 private let fixtures = URL(filePath: #filePath)
