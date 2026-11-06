@@ -9,9 +9,18 @@ enum TranscriptionFailure: Error, Equatable {
   case audioUnreadable, recognitionFailed, saveFailed
 }
 
+/// 「話者を分ける」がオンなのに話者のラベルを付けなかった理由。
+enum SpeakerSkip: Equatable {
+  case modelMissing, failed
+}
+
 /// 会議フォルダーの `recording.caf` を文字起こしし、同じフォルダーの `transcript.md` に書く(既にあれば置き換える)。
-/// 録音は消さず動かさない。認識の失敗は `transcription.log` に 1 行追記する。
-func transcribe(meeting: URL, installation: SpeechInstallation) async throws(TranscriptionFailure) {
+/// 録音は消さず動かさない。認識と話者分離の失敗は `transcription.log` に 1 行追記する。
+/// `separateSpeakers` なら段落に話者のラベルを付ける。付けられなければラベル無しで書き、その理由を返す。
+@discardableResult
+func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers: Bool)
+  async throws(TranscriptionFailure) -> SpeakerSkip?
+{
   let name = meeting.lastPathComponent
   let log = meeting.appending(path: "transcription.log")
   let started = ContinuousClock.now
@@ -38,28 +47,35 @@ func transcribe(meeting: URL, installation: SpeechInstallation) async throws(Tra
   }
   defer { try? FileManager.default.removeItem(at: temporary) }
 
+  let diarize = separateSpeakers && installation.hasDiarizationModel
+  if separateSpeakers && !diarize {
+    logger.info(
+      "transcription speakers skipped reason=model_missing folder.name=\(name, privacy: .public)")
+  }
+  let whole = diarize ? temporary.appending(path: "whole.wav") : nil
   let chunks: [AudioChunk]
   let duration: TimeInterval
   do {
     (chunks, duration) = try writeMonoChunks(
-      of: meeting.appending(path: "recording.caf"), to: temporary)
+      of: meeting.appending(path: "recording.caf"), to: temporary, whole: whole)
   } catch {
     throw failed(
       error, step: "prepare", type: error == .audioUnreadable ? "audio_unreadable" : "file_system")
   }
 
+  // 実測: M2 で asr の RTFx 30〜95、diarize の RTFx 121〜209。120 秒は初回のモデル読み込みの見込み
+  // (runBundledSelfCheck と同じ)、録音の 0.5 倍はその 60 倍以上の余裕。
+  // shortcut: 120 秒 + 録音の 0.5 倍, Metal の無い環境で時間切れの報告があれば実測から決め直す
+  let timeout: Duration = .seconds(120) + .seconds(duration * 0.5)
   var tokens: [RecognizedToken] = []
   if !chunks.isEmpty {
     let stdout: Data
     do {
-      // 実測: M2 で RTFx 30〜95。120 秒は初回のモデル読み込みの見込み(runBundledSelfCheck と同じ)、
-      // 録音の 0.5 倍はその 60 倍以上の余裕。
-      // shortcut: 120 秒 + 録音の 0.5 倍, Metal の無い環境で時間切れの報告があれば実測から決め直す
       stdout = try await runSpeech(
         installation.executable,
         ["asr", installation.modelFile.path, "--timestamps", "--format", "json"]
           + chunks.map(\.file.path),
-        timeout: .seconds(120) + .seconds(duration * 0.5))
+        timeout: timeout)
     } catch {
       let status = error.status.map(String.init) ?? "none"
       appendLog(
@@ -77,9 +93,24 @@ func transcribe(meeting: URL, installation: SpeechInstallation) async throws(Tra
     }
   }
 
+  var speakers: [SpeakerSegment]?
+  var skip: SpeakerSkip? = separateSpeakers && !diarize ? .modelMissing : nil
+  if let whole, !tokens.isEmpty {
+    do throws(SpeakerFailure) {
+      speakers = try await diarizeSpeakers(
+        of: whole, duration: duration, installation: installation, timeout: timeout)
+    } catch {
+      logger.warning(
+        "transcription speakers failed step=\(error.step, privacy: .public) error.type=\(error.type, privacy: .public) app.error.origin=system status=\(error.status, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(error.stderr, privacy: .private)"
+      )
+      appendLog(error.logLine, to: log)
+      skip = .failed
+    }
+  }
+
   let transcript = Transcript(
     meetingName: name, duration: duration, model: installation.model.fileName,
-    paragraphs: paragraphs(tokens))
+    paragraphs: paragraphs(tokens, speakers: speakers))
   do {
     try Data(transcript.markdown.utf8).write(
       to: meeting.appending(path: "transcript.md"), options: .atomic)
@@ -87,9 +118,63 @@ func transcribe(meeting: URL, installation: SpeechInstallation) async throws(Tra
     throw failed(.saveFailed, step: "write", type: "file_system")
   }
   let elapsed = (ContinuousClock.now - started) / .seconds(1)
+  let speakersStatus =
+    switch (separateSpeakers, skip) {
+    case (false, _): "off"
+    case (_, .modelMissing): "model_missing"
+    case (_, .failed): "failed"
+    case (true, nil): "labeled"
+    }
+  let speakerCount = Set(transcript.paragraphs.compactMap(\.speaker)).count
   logger.info(
-    "transcription finished folder.name=\(name, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public)"
+    "transcription finished folder.name=\(name, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public) speakers.status=\(speakersStatus, privacy: .public) speakers.count=\(speakerCount, privacy: .public)"
   )
+  return skip
+}
+
+/// 話者分離が失敗した理由。`step` は `diarize`・`parse`、`type` はログの `error.type`。
+private struct SpeakerFailure: Error {
+  let step: String
+  let type: String
+  var status = "none"
+  /// os のログに `privacy: .private` で出す標準エラー出力の末尾。
+  var stderr = ""
+  /// `transcription.log` に追記する 1 行(標準エラー出力はホームを伏せる)。
+  let logLine: String
+}
+
+/// 録音全体の WAVE `whole` を `speech diarize` に渡し、検証した話者の区間を返す。
+/// 語があるのに区間が 0 個なら、話者を分けられなかったとして投げる。
+private func diarizeSpeakers(
+  of whole: URL, duration: TimeInterval, installation: SpeechInstallation, timeout: Duration
+) async throws(SpeakerFailure) -> [SpeakerSegment] {
+  let stdout: Data
+  do {
+    stdout = try await runSpeech(
+      installation.executable,
+      ["diarize", installation.diarizationModelFile.path, "--format", "json", whole.path],
+      timeout: timeout)
+  } catch {
+    let status = error.status.map(String.init) ?? "none"
+    throw SpeakerFailure(
+      step: "diarize", type: error.type, status: status, stderr: error.stderrTail,
+      logLine:
+        "speakers failed error.type=\(error.type) status=\(status) stderr=\(error.maskedStderrTail)"
+    )
+  }
+  let segments: [SpeakerSegment]
+  do {
+    segments = try speakerSegments(stdout, file: whole, duration: duration)
+  } catch {
+    throw SpeakerFailure(
+      step: "parse", type: "unparsable_output",
+      logLine: "speakers failed error.type=unparsable_output")
+  }
+  guard !segments.isEmpty else {
+    throw SpeakerFailure(
+      step: "parse", type: "no_segments", logLine: "speakers failed error.type=no_segments")
+  }
+  return segments
 }
 
 /// 利用者に通知する文字起こしの結果。`meeting` は会議フォルダーの名前。
@@ -207,7 +292,7 @@ struct TranscriptionSetting {
 @MainActor let transcriber = Transcriber(
   installation: .standard, setting: TranscriptionSetting(),
   transcribe: { meeting, installation async throws(TranscriptionFailure) in
-    try await transcribe(meeting: meeting, installation: installation)
+    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
   },
   notify: { notice in
     // 会議中にモーダルを出さないよう、出せなくても警告に逃がさない。

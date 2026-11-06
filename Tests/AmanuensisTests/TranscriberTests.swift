@@ -329,7 +329,7 @@ private struct ListingMismatch: Error {}
     let transcriber = Transcriber(
       installation: installation, setting: TranscriptionSetting(defaults: defaults),
       transcribe: { meeting, installation async throws(TranscriptionFailure) in
-        try await transcribe(meeting: meeting, installation: installation)
+        try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
       },
       notify: { notices.append($0) })
     let folder = RecordingFolder(defaults: defaults, standardRoot: directory)

@@ -21,7 +21,73 @@ private func token(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -
       TranscriptParagraph(start: 5.5, text: "二つ目"),
       TranscriptParagraph(start: 9.12, text: "三つ目です"),
     ])
+  #expect(paragraphs(tokens, speakers: []) == paragraphs(tokens), "区間が無ければ話者で分けない")
+  #expect(paragraphs(tokens).allSatisfy { $0.speaker == nil })
   #expect(paragraphs([]) == [])
+}
+
+private func segment(_ start: TimeInterval, _ end: TimeInterval, _ speaker: Int) -> SpeakerSegment {
+  SpeakerSegment(start: start, end: end, speaker: speaker)
+}
+
+@Test func paragraphsSplitAtSpeakerChangeAndNumberSpeakersInOrderOfAppearance() {
+  let tokens = [
+    token(1.0, 1.5, "あ"), token(1.6, 2.0, "い"),
+    token(2.8, 3.2, "う"),  // 間隔 0.8 秒で話者が替わる
+    token(4.0, 4.4, "え"),  // どの区間とも重ならない。近いのは 0.5 秒先の話者 0
+    token(5.2, 5.6, "お"),
+    token(7.0, 8.0, "か"),  // 話者 0 と 0.2 秒、話者 3 と 0.8 秒重なる
+  ]
+  let speakers = [
+    segment(0.9, 2.1, 3), segment(2.7, 3.5, 0), segment(5.0, 6.0, 3), segment(6.9, 7.2, 0),
+    segment(7.2, 8.1, 3),
+  ]
+  #expect(
+    paragraphs(tokens, speakers: speakers) == [
+      TranscriptParagraph(start: 1.0, text: "あい", speaker: 1),
+      TranscriptParagraph(start: 2.8, text: "うえ", speaker: 2),
+      TranscriptParagraph(start: 5.2, text: "おか", speaker: 1),
+    ])
+}
+
+@Test func speakerSegmentsReadOneLineForWholeFile() throws {
+  let stdout = Data(
+    #"{"file":"/tmp/t/whole.wav","segments":[{"start":0.5,"end":2.0,"speaker":0},{"start":2.5,"end":11.0,"speaker":1}]}"#
+      .utf8 + [UInt8(ascii: "\n")])
+  #expect(
+    try speakerSegments(stdout, file: URL(filePath: "/tmp/t/whole.wav"), duration: 10) == [
+      segment(0.5, 2.0, 0), segment(2.5, 11.0, 1),
+    ])
+}
+
+private let wholeLine =
+  #"{"file":"/tmp/t/whole.wav","segments":[{"start":0.5,"end":2.0,"speaker":0}]}"#
+
+@Test(
+  arguments: [
+    #"{"file":"/tmp/t/other.wav","segments":[]}"#,
+    wholeLine + "\n" + wholeLine,
+    "not json",
+    "",
+    #"{"file":"/tmp/t/whole.wav","segments":[{"start":2.0,"end":1.0,"speaker":0}]}"#,
+    #"{"file":"/tmp/t/whole.wav","segments":[{"start":-0.5,"end":1.0,"speaker":0}]}"#,
+    #"{"file":"/tmp/t/whole.wav","segments":[{"start":1.0,"end":11.5,"speaker":0}]}"#,
+    #"{"file":"/tmp/t/whole.wav"}"#,
+  ])
+func speakerSegmentsRejectUnexpectedOutput(line: String) {
+  #expect(throws: (any Error).self) {
+    try speakerSegments(Data(line.utf8), file: URL(filePath: "/tmp/t/whole.wav"), duration: 10)
+  }
+}
+
+@Test func markdownLabelsParagraphWithSpeaker() {
+  let transcript = Transcript(
+    meetingName: "2026-11-06_100000", duration: 30, model: "m",
+    paragraphs: [
+      TranscriptParagraph(start: 1, text: "はい", speaker: 1),
+      TranscriptParagraph(start: 26.6, text: "こんにちは", speaker: 2),
+    ])
+  #expect(transcript.markdown.hasSuffix("[00:00:01] 話者 1: はい\n\n[00:00:26] 話者 2: こんにちは\n"))
 }
 
 private let chunks = [
@@ -180,6 +246,36 @@ private func samples(of url: URL) throws -> (values: [Float], rate: Double, chan
   }
 }
 
+@Test func wholeMonoFileIsChunksJoined() throws {
+  let directory = try temporaryDirectory("whole")
+  let audio = directory.appending(path: "recording.caf")
+  try writeStereoCAF(to: audio, seconds: 130) { t in
+    (44.5...45.5).contains(t) || (99.5...100.5).contains(t) ? 0 : sine(t)
+  }
+  let whole = directory.appending(path: "whole.wav")
+
+  let (chunks, _) = try writeMonoChunks(of: audio, to: directory, whole: whole)
+
+  let (values, rate, channels) = try samples(of: whole)
+  #expect(rate == 16_000)
+  #expect(channels == 1)
+  #expect(values.count == 130 * 16_000, "全体のフレーム数が録音のフレーム数")
+  #expect(values == (try chunks.flatMap { try samples(of: $0.file).values }), "全体は区間をつないだもの")
+}
+
+@Test func noWholeFileWithoutWholeURL() throws {
+  let directory = try temporaryDirectory("no-whole")
+  let audio = directory.appending(path: "recording.caf")
+  try writeStereoCAF(to: audio, seconds: 3) { sine($0) }
+
+  _ = try writeMonoChunks(of: audio, to: directory)
+
+  #expect(
+    try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == [
+      "chunk-0001.wav", "recording.caf",
+    ])
+}
+
 @Test func emptyRecordingHasNoChunks() throws {
   let directory = try temporaryDirectory("empty")
   let audio = directory.appending(path: "recording.caf")
@@ -281,32 +377,36 @@ private func arguments(_ installation: SpeechInstallation) throws -> [String] {
     .split(separator: "\n").map(String.init)
 }
 
+/// `meetingFolder()` を `twoWordsPerChunk` で文字起こししたラベル無しの `transcript.md`(R3 の出力)。
+private let unlabeledTranscript = """
+  # 会議の文字起こし
+
+  - 日時: 2026-11-06 10:15:00
+  - 録音の長さ: 00:01:10
+  - モデル: Haas-616M-ja-v1.0-Q8_0.gguf
+
+  [00:00:01] こんにちは
+
+  [00:00:04] さようなら
+
+  [00:00:51] こんにちは
+
+  [00:00:54] さようなら
+
+  """
+
+private func transcript(of meeting: URL) throws -> String {
+  try String(contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
+}
+
 @Test func transcribeWritesTranscriptWithHeaderAndOffsetTimes() async throws {
   let meeting = try meetingFolder()
   let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
   let installation = try fakeInstallation(twoWordsPerChunk)
 
-  try await transcribe(meeting: meeting, installation: installation)
+  try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
 
-  let transcript = try String(
-    contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
-  #expect(
-    transcript == """
-      # 会議の文字起こし
-
-      - 日時: 2026-11-06 10:15:00
-      - 録音の長さ: 00:01:10
-      - モデル: Haas-616M-ja-v1.0-Q8_0.gguf
-
-      [00:00:01] こんにちは
-
-      [00:00:04] さようなら
-
-      [00:00:51] こんにちは
-
-      [00:00:54] さようなら
-
-      """)
+  #expect(try transcript(of: meeting) == unlabeledTranscript)
   let args = try arguments(installation)
   #expect(
     Array(args.prefix(5)) == [
@@ -325,7 +425,7 @@ private func arguments(_ installation: SpeechInstallation) throws -> [String] {
     #"for a in "$@"; do case "$a" in *.wav) printf '{"file":"%s","tokens":[]}\n' "$a";; esac; done"#
   )
 
-  try await transcribe(meeting: meeting, installation: installation)
+  try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
 
   let transcript = try String(
     contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
@@ -336,7 +436,7 @@ private func transcriptionFailure(
   meeting: URL, installation: SpeechInstallation
 ) async -> TranscriptionFailure? {
   do {
-    try await transcribe(meeting: meeting, installation: installation)
+    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
     return nil
   } catch {
     return error
@@ -345,6 +445,122 @@ private func transcriptionFailure(
 
 private func log(of meeting: URL) throws -> String {
   try String(contentsOf: meeting.appending(path: "transcription.log"), encoding: .utf8)
+}
+
+/// asr には `twoWordsPerChunk` で答え、diarize には引数を `runtime/diarize-args` に書いて `diarize` を実行する偽の speech。
+/// `diarize` の `$5` は全体の WAVE のパス。
+private func fakeInstallation(diarize: String, withModel: Bool = true) throws -> SpeechInstallation
+{
+  let installation = try fakeInstallation(
+    """
+    case "$1" in
+    asr)
+    \(twoWordsPerChunk);;
+    diarize)
+    printf '%s\\n' "$@" > "$(dirname "$0")/diarize-args"
+    \(diarize);;
+    esac
+    """)
+  if withModel { try Data().write(to: installation.diarizationModelFile) }
+  return installation
+}
+
+private func diarizeArguments(_ installation: SpeechInstallation) -> [String]? {
+  (try? String(
+    contentsOf: installation.runtimeDirectory.appending(path: "diarize-args"), encoding: .utf8))
+    .map { $0.split(separator: "\n").map(String.init) }
+}
+
+/// 区間ごとの「こんにちは」(1 秒)と「さようなら」(4 秒)を別の人が話した区間。
+private let twoSpeakers = #"""
+  printf '{"file":"%s","segments":[{"start":0.5,"end":2.0,"speaker":0},{"start":3.5,"end":5.0,"speaker":1},{"start":50.5,"end":52.5,"speaker":0},{"start":53.5,"end":55.5,"speaker":1}]}\n' "$5"
+  """#
+
+@Test func transcribeLabelsParagraphsWithSpeakers() async throws {
+  let meeting = try meetingFolder()
+  let installation = try fakeInstallation(diarize: twoSpeakers)
+
+  let skip = try await transcribe(
+    meeting: meeting, installation: installation, separateSpeakers: true)
+
+  #expect(skip == nil)
+  #expect(
+    try transcript(of: meeting) == """
+      # 会議の文字起こし
+
+      - 日時: 2026-11-06 10:15:00
+      - 録音の長さ: 00:01:10
+      - モデル: Haas-616M-ja-v1.0-Q8_0.gguf
+
+      [00:00:01] 話者 1: こんにちは
+
+      [00:00:04] 話者 2: さようなら
+
+      [00:00:51] 話者 1: こんにちは
+
+      [00:00:54] 話者 2: さようなら
+
+      """)
+  let args = try #require(diarizeArguments(installation))
+  #expect(
+    Array(args.prefix(4)) == [
+      "diarize", installation.diarizationModelFile.path, "--format", "json",
+    ])
+  #expect(args.count == 5)
+  #expect(args.last?.hasSuffix("/whole.wav") == true)
+  #expect(!FileManager.default.fileExists(atPath: args[4]), "全体の WAVE を消す")
+}
+
+@Test func transcribeWithSpeakersOffWritesUnlabeledTranscriptWithoutDiarize() async throws {
+  let meeting = try meetingFolder()
+  let installation = try fakeInstallation(diarize: twoSpeakers)
+
+  let skip = try await transcribe(
+    meeting: meeting, installation: installation, separateSpeakers: false)
+
+  #expect(skip == nil)
+  #expect(try transcript(of: meeting) == unlabeledTranscript)
+  #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
+}
+
+@Test func transcribeWithoutDiarizationModelWritesUnlabeledTranscript() async throws {
+  let meeting = try meetingFolder()
+  let installation = try fakeInstallation(diarize: twoSpeakers, withModel: false)
+
+  let skip = try await transcribe(
+    meeting: meeting, installation: installation, separateSpeakers: true)
+
+  #expect(skip == .modelMissing)
+  #expect(try transcript(of: meeting) == unlabeledTranscript)
+  #expect(diarizeArguments(installation) == nil, "diarize を呼ばない")
+}
+
+@Test(
+  arguments: [
+    (
+      #"echo "$HOME/broken" >&2; exit 1"#,
+      "speakers failed error.type=exited status=1 stderr=~/broken"
+    ),
+    ("echo 'not json'", "speakers failed error.type=unparsable_output"),
+    (#"printf '{"file":"%s","segments":[]}\n' "$5""#, "speakers failed error.type=no_segments"),
+  ])
+func diarizeFailureWritesUnlabeledTranscript(diarize: String, logLine: String) async throws {
+  let meeting = try meetingFolder()
+  let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
+  let installation = try fakeInstallation(diarize: diarize)
+
+  let skip = try await transcribe(
+    meeting: meeting, installation: installation, separateSpeakers: true)
+
+  #expect(skip == .failed)
+  #expect(try transcript(of: meeting) == unlabeledTranscript)
+  let lines = try log(of: meeting).split(separator: "\n")
+  #expect(lines.count == 1)
+  #expect(lines.first?.contains(" " + logLine) == true, "\(lines)")
+  #expect(!(try log(of: meeting)).contains(NSHomeDirectory()), "ホームのパスを出さない")
+  #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
+  let whole = try #require(diarizeArguments(installation)?.last)
+  #expect(!FileManager.default.fileExists(atPath: whole), "失敗でも全体の WAVE を消す")
 }
 
 @Test func speechExitFailureIsLoggedAndKeepsRecording() async throws {
@@ -418,9 +634,9 @@ private let sampleText = URL(filePath: #filePath)
   .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
   .appending(path: "Resources/SelfCheck/sample.txt")
 
-/// フィクスチャを右チャンネル(左は 0)に置いた録音を本物の speech で文字起こしし、段落の時刻(秒)と本文を返す。
-private func transcribeFixture(_ name: String) async throws -> (
-  header: [Substring], paragraphs: [(seconds: Int, text: String)]
+/// フィクスチャを右チャンネル(左は 0)に置いた録音を本物の speech で文字起こしし、段落の時刻(秒)・話者・本文を返す。
+private func transcribeFixture(_ name: String, separateSpeakers: Bool) async throws -> (
+  header: [Substring], paragraphs: [(seconds: Int, speaker: Int?, text: String)]
 ) {
   let (values, rate, _) = try samples(of: fixtures.appending(path: name))
   let meeting = try temporaryDirectory("2026-11-06_101500")
@@ -430,17 +646,22 @@ private func transcribeFixture(_ name: String) async throws -> (
     values[min(Int(($0 * rate).rounded()), values.count - 1)]
   }
 
-  try await transcribe(meeting: meeting, installation: .standard)
+  try await transcribe(
+    meeting: meeting, installation: .standard, separateSpeakers: separateSpeakers)
 
   let transcript = try String(
     contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
   print("transcript \(name) \(meeting.path)\n\(transcript)")
   let lines = transcript.split(separator: "\n")
-  let paragraphs = lines.compactMap { line -> (Int, String)? in
-    guard let match = String(line).wholeMatch(of: /\[(\d{2}):(\d{2}):(\d{2})\] (.+)/) else {
-      return nil
-    }
-    return (Int(match.1)! * 3600 + Int(match.2)! * 60 + Int(match.3)!, String(match.4))
+  let paragraphs = lines.compactMap { line -> (Int, Int?, String)? in
+    guard
+      let match = String(line).wholeMatch(
+        of: /\[(\d{2}):(\d{2}):(\d{2})\] (?:話者 (\d+): )?(.+)/)
+    else { return nil }
+    return (
+      Int(match.1)! * 3600 + Int(match.2)! * 60 + Int(match.3)!, match.4.map { Int($0)! },
+      String(match.5)
+    )
   }
   return (Array(lines.prefix(4)), paragraphs)
 }
@@ -453,7 +674,7 @@ private let e2eEnabled =
 func transcribeFixtureWithBundledModel(name: String) async throws {
   let reference = try String(contentsOf: sampleText, encoding: .utf8)
 
-  let (header, paragraphs) = try await transcribeFixture(name)
+  let (header, paragraphs) = try await transcribeFixture(name, separateSpeakers: false)
 
   #expect(
     header == [
@@ -461,6 +682,7 @@ func transcribeFixtureWithBundledModel(name: String) async throws {
       "- モデル: Haas-616M-ja-v1.0-Q8_0.gguf",
     ])
   #expect(paragraphs.count == 3, "回ごとに 1 段落")
+  #expect(paragraphs.allSatisfy { $0.speaker == nil }, "オフでは話者のラベルが無い")
   for (paragraph, start) in zip(paragraphs, [1.0, 26.6, 52.2]) {
     let cer = characterErrorRate(paragraph.text, reference: reference)
     print("cer \(name) [\(paragraph.seconds)] \(String(format: "%.4f", cer))")
@@ -469,4 +691,29 @@ func transcribeFixtureWithBundledModel(name: String) async throws {
     #expect(
       abs(Double(paragraph.seconds) - start) <= 2, "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
   }
+}
+
+@Test(.enabled(if: e2eEnabled && SpeechInstallation.standard.hasDiarizationModel))
+func speakerLabelsFollowVoiceWithBundledModels() async throws {
+  let reference = try String(contentsOf: sampleText, encoding: .utf8)
+
+  let (_, labeled) = try await transcribeFixture(
+    "transcription-3x-two-voices.wav", separateSpeakers: true)
+
+  #expect(labeled.map(\.speaker) == [1, 2, 1], "2 回目の別の声だけが話者 2")
+  for (paragraph, start) in zip(labeled, [1.0, 26.6, 54.8]) {
+    let cer = characterErrorRate(paragraph.text, reference: reference)
+    print("cer two-voices [\(paragraph.seconds)] \(String(format: "%.4f", cer))")
+    #expect(cer <= selfCheckMaxCER, "段落 \(paragraph.seconds) 秒の CER \(cer)")
+    #expect(
+      abs(Double(paragraph.seconds) - start) <= 2, "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
+  }
+
+  let (_, unlabeled) = try await transcribeFixture(
+    "transcription-3x-two-voices.wav", separateSpeakers: false)
+  #expect(unlabeled.count == 3)
+  #expect(unlabeled.allSatisfy { $0.speaker == nil }, "オフでは話者のラベルが無い")
+
+  let (_, sameVoice) = try await transcribeFixture("transcription-3x.wav", separateSpeakers: true)
+  #expect(sameVoice.map(\.speaker) == [1, 1, 1], "同じ声の 3 回は同じ話者")
 }
