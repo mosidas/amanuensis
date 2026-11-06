@@ -149,7 +149,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
 }
 
 /// 録音中の Recorder を作って `body` に渡し、終わったら止めて保存先を消す。
-@MainActor private func withRecording(_ body: (RecorderState, Date) throws -> Void) async throws {
+@MainActor func withRecording(_ body: (RecorderState, Date) throws -> Void) async throws {
   let directory = FileManager.default.temporaryDirectory.appending(
     path: "RecordingTextTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
