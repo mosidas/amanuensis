@@ -62,15 +62,23 @@ private let chunks = [
     ], "区間の頭の語は前の区間の段落に付かない")
 }
 
-@Test(arguments: [
-  #"{"file":"/tmp/t/other.wav","tokens":[]}"#,
-  #"{"file":"/tmp/t/chunk-0001.wav"}"#,
-  "not json",
-  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":1e300,"end":1e300,"text":"あ"}]}"#,
-  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":-5,"end":0.2,"text":"あ"}]}"#,
-  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":2.0,"end":1.0,"text":"あ"}]}"#,
-  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":0,"end":0.2,"text":""},{"start":1e300,"end":1e300,"text":"あ"}]}"#,
-])
+private let secondChunkLine = #"{"file":"/tmp/t/chunk-0002.wav","tokens":[]}"#
+
+@Test(
+  arguments: [
+    #"{"file":"/tmp/t/other.wav","tokens":[]}"#,
+    #"{"file":"/tmp/t/chunk-0001.wav"}"#,
+    "not json",
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":1e300,"end":1e300,"text":"あ"}]}"#,
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":-5,"end":0.2,"text":"あ"}]}"#,
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":2.0,"end":1.0,"text":"あ"}]}"#,
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":0,"end":0.2,"text":""},{"start":1e300,"end":1e300,"text":"あ"}]}"#,
+  ].map { $0 + "\n" + secondChunkLine } + [
+    "",
+    secondChunkLine,
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[]}"# + "\n" + secondChunkLine + "\n"
+      + secondChunkLine,
+  ])
 func recognizedTokensRejectUnexpectedOutput(line: String) {
   #expect(throws: (any Error).self) { try recognizedTokens(Data(line.utf8), chunks: chunks) }
 }
@@ -81,7 +89,7 @@ func recognizedTokensRejectUnexpectedOutput(line: String) {
       .utf8)
   let transcript = Transcript(
     meetingName: "2026-11-06_100000", duration: 2, model: "m",
-    paragraphs: paragraphs(try recognizedTokens(stdout, chunks: chunks)))
+    paragraphs: paragraphs(try recognizedTokens(stdout, chunks: [chunks[0]])))
   #expect(
     transcript.markdown.split(separator: "\n").filter { $0.hasPrefix("[") } == [
       "[00:00:01] 前[00:00:00] 偽の段落[31m赤後終"

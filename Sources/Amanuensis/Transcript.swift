@@ -29,16 +29,16 @@ private struct UnexpectedTime: Error {}
 // 120 秒: 区間は最長 60 秒(`TranscriptionAudio.swift`)。区間の中の時刻がそれを大きく超えることは無いので倍の余裕を取る。
 private let maxTokenSeconds: TimeInterval = 120
 
-/// speech の標準出力を語の列にする。`file` が `chunks` のどれでもない行・デコードできない行・`tokens` の無い行・
-/// 時刻が `0 <= start <= end <= 120` でない語のある行は投げる。
+/// speech の標準出力を語の列にする。`file` が `chunks` のどれでもない行・同じ `file` の 2 行目・デコードできない行・
+/// `tokens` の無い行・時刻が `0 <= start <= end <= 120` でない語のある行は投げる。行の無い区間があっても投げる。
 /// `text` が空の語は捨て、`text` の制御文字と U+2028・U+2029 は除く。区間の最初の語は次の語の始まりの時刻にする。
 func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [RecognizedToken] {
-  let offsets = Dictionary(uniqueKeysWithValues: chunks.map { ($0.file.path, $0.offset) })
+  var pending = Dictionary(uniqueKeysWithValues: chunks.map { ($0.file.path, $0.offset) })
   let decoder = JSONDecoder()
   var tokens: [RecognizedToken] = []
   for line in stdout.split(separator: UInt8(ascii: "\n")) {
     let output = try decoder.decode(SpeechOutputLine.self, from: Data(line))
-    guard let offset = offsets[output.file] else { throw UnexpectedFile() }
+    guard let offset = pending.removeValue(forKey: output.file) else { throw UnexpectedFile() }
     // speech は区間の最初の語を、音声の始まりにかかわらず start=0 で出す(実測: 2.95 秒から話し始める区間で
     // `(0, 0.32, "これは"), (3.6, 3.76, "ア")`)。普通は空の text だが、無音で始まる区間では実在の語が来る。
     var raw = output.tokens
@@ -51,6 +51,7 @@ func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [Recognize
       RecognizedToken(start: $0.start + offset, end: $0.end + offset, text: lineSafe($0.text))
     }.filter { !$0.text.isEmpty }
   }
+  guard pending.isEmpty else { throw UnexpectedFile() }
   return tokens
 }
 
