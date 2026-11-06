@@ -79,17 +79,22 @@ func oneLine(_ text: String) -> String {
 func appendLog(_ line: String, to url: URL) {
   // shortcut: ローテーションなし(1 回の確認で 1 行、約 1 KB), ファイルが 1 MB を超える報告があれば古い行を切り捨てる
   let data = Data("\(Date.now.ISO8601Format()) \(line)\n".utf8)
-  do {
-    if !FileManager.default.fileExists(atPath: url.path) { try Data().write(to: url) }
-    let handle = try FileHandle(forWritingTo: url)
-    defer { try? handle.close() }
-    try handle.seekToEnd()
-    try handle.write(contentsOf: data)
-  } catch {
-    logger.error(
-      "log write failed error.type=file_system app.error.origin=system file=\(url.lastPathComponent, privacy: .public)"
-    )
+  // O_NOFOLLOW: 保存先が共有のボリュームのとき、他者が置いたリンクをたどって外へ書かない。
+  let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o644)
+  guard fd >= 0 else {
+    logWriteFailed(url, errno)
+    return
   }
+  defer { close(fd) }
+  if data.withUnsafeBytes({ write(fd, $0.baseAddress, $0.count) }) < 0 {
+    logWriteFailed(url, errno)
+  }
+}
+
+private func logWriteFailed(_ url: URL, _ code: Int32) {
+  logger.error(
+    "log write failed error.type=file_system app.error.origin=system errno=\(code, privacy: .public) file=\(url.lastPathComponent, privacy: .public)"
+  )
 }
 
 /// パイプを閉じられるまで読む。読み取りで待つ間、Swift の並行処理のスレッドを塞がない。

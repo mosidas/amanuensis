@@ -77,9 +77,12 @@ struct RecordingFolder {
     return folder
   }
 
-  /// 会議フォルダーの名前が表す日時。名前が `yyyy-MM-dd_HHmmss` の形でなければ nil。
+  /// 会議フォルダーの名前が表す日時。名前が `yyyy-MM-dd_HHmmss` の形と完全に一致しなければ nil。
   static func meetingDate(named name: String) -> Date? {
-    meetingName.date(from: name)
+    guard let date = meetingName.date(from: name), meetingName.string(from: date) == name else {
+      return nil
+    }
+    return date
   }
 
   private func logFailure(_ step: StaticString, _ error: any Error) {

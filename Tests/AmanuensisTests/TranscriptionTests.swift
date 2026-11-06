@@ -191,6 +191,35 @@ private func samples(of url: URL) throws -> (values: [Float], rate: Double, chan
   #expect(duration == 0)
 }
 
+/// 5 Hz・16 bit・mono の CAF に無音を 400 フレーム(80 秒)書く。
+private func writeFiveHertzCAF(to url: URL) throws {
+  var format = AudioStreamBasicDescription(
+    mSampleRate: 5, mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2, mChannelsPerFrame: 1,
+    mBitsPerChannel: 16, mReserved: 0)
+  var file: AudioFileID?
+  try #require(
+    AudioFileCreateWithURL(url as CFURL, kAudioFileCAFType, &format, .eraseFile, &file) == noErr)
+  let handle = try #require(file)
+  defer { AudioFileClose(handle) }
+  let frames = [Int16](repeating: 0, count: 400)
+  var bytes = UInt32(frames.count * 2)
+  try frames.withUnsafeBytes { raw in
+    try #require(AudioFileWriteBytes(handle, false, 0, &bytes, raw.baseAddress!) == noErr)
+  }
+}
+
+@Test func sampleRateBelowTenHertzIsAudioUnreadable() throws {
+  let directory = try temporaryDirectory("five-hertz")
+  let audio = directory.appending(path: "recording.caf")
+  try writeFiveHertzCAF(to: audio)
+
+  #expect(throws: TranscriptionFailure.audioUnreadable) {
+    try writeMonoChunks(of: audio, to: directory)
+  }
+}
+
 /// `.wav` の引数ごとに、区間の 1 秒と 4 秒から始まる語 2 つ(間隔 2.5 秒で別の段落)を出す。
 private let twoWordsPerChunk = #"""
   for a in "$@"; do

@@ -26,13 +26,14 @@ func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailu
   }
   let rate = input.processingFormat.sampleRate
   let channels = Int(input.processingFormat.channelCount)
+  let frame = Int(rate) / 10
+  guard frame > 0 else { throw .audioUnreadable }
   guard
     let buffer = AVAudioPCMBuffer(
       pcmFormat: input.processingFormat, frameCapacity: AVAudioFrameCount(rate))
   else { throw .audioUnreadable }
   let window = maxChunkSeconds * Int(rate)
   let searchStart = minChunkSeconds * Int(rate)
-  let frame = Int(rate) / 10
 
   var chunks: [AudioChunk] = []
   var written = 0
