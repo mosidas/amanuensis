@@ -16,6 +16,15 @@ enum RecordingProblem: Error, Equatable {
 /// 録音の保存先。会議ごとのフォルダーをこの下に作る。
 struct RecordingFolder {
   private static let key = "recordingFolder"
+  /// 会議フォルダーの名前の形式。手元の時刻で `yyyy-MM-dd_HHmmss`。
+  private static let meetingName = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+    return formatter
+  }()
   private let defaults: UserDefaults
   private let standardRoot: URL
 
@@ -57,12 +66,8 @@ struct RecordingFolder {
     guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
       isDirectory.boolValue
     else { throw .folderMissing }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.timeZone = .current
-    formatter.dateFormat = "yyyy-MM-dd_HHmmss"
-    let folder = root.appending(path: formatter.string(from: date), directoryHint: .isDirectory)
+    let folder = root.appending(
+      path: Self.meetingName.string(from: date), directoryHint: .isDirectory)
     do {
       try fileManager.createDirectory(at: folder, withIntermediateDirectories: false)
     } catch {
@@ -70,6 +75,11 @@ struct RecordingFolder {
       throw .folderNotWritable
     }
     return folder
+  }
+
+  /// 会議フォルダーの名前が表す日時。名前が `yyyy-MM-dd_HHmmss` の形でなければ nil。
+  static func meetingDate(named name: String) -> Date? {
+    meetingName.date(from: name)
   }
 
   private func logFailure(_ step: StaticString, _ error: any Error) {
