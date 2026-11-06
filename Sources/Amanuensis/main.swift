@@ -25,5 +25,6 @@ app.delegate = appDelegate
 
 // トップレベルで保持する。解放されるとメニューバーのアイコンが消える。
 let menuBar = MenuBar()
+meetingWatcher.start()
 
 app.run()

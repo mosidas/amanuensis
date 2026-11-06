@@ -128,6 +128,39 @@ private let silence: [AudioProcess] = []
         autoRecord: true, now: at(2)) == [])
   }
 
+  @Test func earlierAppInTableWinsWhenDetectedTogether() {
+    var detector = MeetingDetector()
+
+    #expect(
+      detector.update(
+        processes: usingMicrophone("com.google.Chrome.helper", "us.zoom.xos"), recorder: .idle,
+        autoRecord: true, now: at(0)) == [.startRecording(.zoom)])
+  }
+
+  @Test func otherMeetingAppKeepsMeetingGoing() {
+    let chrome = usingMicrophone("com.google.Chrome.helper")
+    var detector = MeetingDetector()
+
+    #expect(
+      detector.update(
+        processes: usingMicrophone("us.zoom.xos"), recorder: .idle, autoRecord: true, now: at(0))
+        == [.startRecording(.zoom)])
+    #expect(
+      detector.update(
+        processes: chrome, recorder: .recording(.meeting), autoRecord: true, now: at(2)) == [])
+    #expect(
+      detector.update(
+        processes: chrome, recorder: .recording(.meeting), autoRecord: true, now: at(10)) == [])
+    #expect(
+      detector.update(
+        processes: silence, recorder: .recording(.meeting), autoRecord: true, now: at(24)) == [],
+      "表のアプリのどれかが最後に使った時刻から 14 秒では止めない")
+    #expect(
+      detector.update(
+        processes: silence, recorder: .recording(.meeting), autoRecord: true, now: at(25))
+        == [.stopRecording(.zoom)])
+  }
+
   @Test func notifiesInsteadOfStartingWhenAutoRecordIsOff() {
     var detector = MeetingDetector()
 

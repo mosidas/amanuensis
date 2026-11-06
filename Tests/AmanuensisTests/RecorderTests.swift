@@ -26,7 +26,7 @@ import Testing
 }
 
 /// 偽の取り込みの開始のしかた。
-private enum StartBehavior {
+enum StartBehavior {
   case succeed, fail, failUnknown
   case succeedAfter(Duration)
   case waitForRelease
@@ -35,7 +35,7 @@ private enum StartBehavior {
 }
 
 /// 一時ディレクトリの保存先、専用の UserDefaults の suite、偽の取り込み、報告の記録。
-@MainActor private final class Harness {
+@MainActor final class RecorderHarness {
   let suiteName = "RecorderTests-\(UUID().uuidString)"
   let directory = FileManager.default.temporaryDirectory.appending(
     path: "RecorderTests-\(UUID().uuidString)")
@@ -131,7 +131,7 @@ private func exists(_ url: URL) -> Bool {
 
 @Suite(.serialized) @MainActor struct RecorderTests {
   @Test func refusesWhenPermissionIsMissing() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.missing = [.microphone]
     let recorder = try harness.recorder()
@@ -145,7 +145,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func startsCaptureWhenPermissionsAreGranted() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder()
 
@@ -156,8 +156,27 @@ private func exists(_ url: URL) -> Bool {
     #expect(harness.reports.isEmpty)
   }
 
+  @Test func recordingRemembersWhoStartedIt() async throws {
+    let meeting = try RecorderHarness()
+    let manual = try RecorderHarness()
+    defer {
+      meeting.remove()
+      manual.remove()
+    }
+    let meetingRecorder = try meeting.recorder()
+    let manualRecorder = try manual.recorder()
+
+    await meetingRecorder.start(trigger: .meeting)
+    await manualRecorder.start()
+
+    #expect(meetingRecorder.state.activity == .recording(.meeting))
+    #expect(manualRecorder.state.activity == .recording(.manual), "メニューの開始は手動の録音になる")
+    await meetingRecorder.stop()
+    await manualRecorder.stop()
+  }
+
   @Test func refusesWhenFolderIsMissing() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder(folderRoot: harness.directory.appending(path: "missing"))
 
@@ -169,7 +188,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func startAndStopKeepsStereoFileAndReleasesSleepAssertion() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder()
 
@@ -195,7 +214,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func discardRemovesMeetingFolder() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder()
     await recorder.start()
@@ -214,7 +233,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func captureFailureRemovesMeetingFolder() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .fail
     let recorder = try harness.recorder()
@@ -228,7 +247,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func captureErrorWithoutKindReportsStartFailed() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .failUnknown
     let recorder = try harness.recorder()
@@ -241,7 +260,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func captureTimeoutFailsAndStopsLateSession() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .succeedAfter(.milliseconds(600))
     let recorder = try harness.recorder(startTimeout: .milliseconds(200))
@@ -258,7 +277,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func interruptionKeepsFileAndReturnsToIdle() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder()
     await recorder.start()
@@ -277,7 +296,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func startWhileStartingDoesNothing() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .waitForRelease
     let recorder = try harness.recorder()
@@ -296,7 +315,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func interruptionWhileStartingReturnsToIdleAndKeepsFile() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .interruptBeforeReturn
     let recorder = try harness.recorder()
@@ -313,7 +332,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func stopFailureReportsSaveFailedAndReturnsToIdle() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     harness.behavior = .stopFails
     let recorder = try harness.recorder()
@@ -327,7 +346,7 @@ private func exists(_ url: URL) -> Bool {
   }
 
   @Test func discardFailureReportsDiscardFailedAndReturnsToIdle() async throws {
-    let harness = try Harness()
+    let harness = try RecorderHarness()
     defer { harness.remove() }
     let recorder = try harness.recorder()
     await recorder.start()
