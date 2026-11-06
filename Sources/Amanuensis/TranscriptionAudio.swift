@@ -13,10 +13,11 @@ private let minChunkSeconds = 40
 
 /// `audio` を全チャンネルの平均のモノラルにし、最長 60 秒の区間に分けて `directory` に
 /// `chunk-0001.wav` からの連番で元の標本化周波数・16 bit の WAVE に書く。0 フレームの録音は区間 0 個。
-/// 録音を読めなければ `.audioUnreadable`、区間を書けなければ `.saveFailed` を投げる。
-func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailure) -> (
-  chunks: [AudioChunk], duration: TimeInterval
-) {
+/// `whole` を渡せば、録音全体の同じモノラルも 1 つの WAVE に書いて閉じる。
+/// 録音を読めなければ `.audioUnreadable`、区間か全体を書けなければ `.saveFailed` を投げる。
+func writeMonoChunks(of audio: URL, to directory: URL, whole: URL? = nil)
+  throws(TranscriptionFailure) -> (chunks: [AudioChunk], duration: TimeInterval)
+{
   // shortcut: 区間の WAVE を全部書いてから認識する(1 時間で約 345 MB の一時ファイル), 一時ファイルの容量が問題になったら区間ごとに認識へ渡す
   // 保存先の FIFO は AVAudioFile が書き手を待って戻らず、リンクは保存先の外を読む。
   guard RecordingFolder.isPlainFile(audio) else { throw .audioUnreadable }
@@ -35,6 +36,15 @@ func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailu
     let buffer = AVAudioPCMBuffer(
       pcmFormat: input.processingFormat, frameCapacity: AVAudioFrameCount(rate))
   else { throw .audioUnreadable }
+  // shortcut: 録音全体のモノラルを元の標本化周波数で書く(48 kHz で 1 時間 346 MB の一時ファイル・diarize の RSS 1.9 GB の実測), 長い会議でディスクかメモリが足りない報告があれば 16 kHz に下げて書く
+  let wholeFile: AVAudioFile?
+  do {
+    wholeFile = try whole.map { try monoWAVE(rate: rate, at: $0) }
+  } catch {
+    throw .saveFailed
+  }
+  // speech が読む前に閉じる。
+  defer { wholeFile?.close() }
   let window = maxChunkSeconds * Int(rate)
   let searchStart = minChunkSeconds * Int(rate)
 
@@ -64,10 +74,18 @@ func writeMonoChunks(of audio: URL, to directory: URL) throws(TranscriptionFailu
     guard buffer.frameLength > 0, let data = buffer.floatChannelData else {
       throw .audioUnreadable
     }
+    let start = pending.count
     for i in 0..<Int(buffer.frameLength) {
       var sum: Float = 0
       for channel in 0..<channels { sum += data[channel][i] }
       pending.append(sum / Float(channels))
+    }
+    if let wholeFile {
+      do {
+        try append(pending[start...], to: wholeFile)
+      } catch {
+        throw .saveFailed
+      }
     }
     while pending.count > window {
       let quietest = stride(from: searchStart, through: window - frame, by: frame).min {
@@ -86,14 +104,23 @@ private func energy(_ samples: ArraySlice<Float>) -> Float {
 
 /// `samples` を mono・16 bit の WAVE に書いて閉じる。speech が読む前に閉じておく。
 private func writeMonoWAVE(_ samples: ArraySlice<Float>, rate: Double, to url: URL) throws {
-  let file = try AVAudioFile(
+  let file = try monoWAVE(rate: rate, at: url)
+  defer { file.close() }
+  try append(samples, to: file)
+}
+
+/// 書き込み用に開いた mono・16 bit の WAVE。標本は Float で渡す。
+private func monoWAVE(rate: Double, at url: URL) throws -> AVAudioFile {
+  try AVAudioFile(
     forWriting: url,
     settings: [
       AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
       AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
     ],
     commonFormat: .pcmFormatFloat32, interleaved: false)
-  defer { file.close() }
+}
+
+private func append(_ samples: ArraySlice<Float>, to file: AVAudioFile) throws {
   guard
     let buffer = AVAudioPCMBuffer(
       pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(samples.count))

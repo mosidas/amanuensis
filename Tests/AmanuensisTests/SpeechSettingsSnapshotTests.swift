@@ -16,18 +16,23 @@ private let folder = FileManager.default.homeDirectoryForCurrentUser.appending(
 private let download = SpeechButton(label: "ダウンロード", action: .download)
 private let retryDownload = SpeechButton(label: "再試行", action: .download)
 
-// 662_469_229 はランタイムとモデルの合計。245_200_000 はその 37.01%。
+// 768_648_717 はランタイム・Haas・話者分離のモデルの合計。245_200_000 はその 31.90%。
 private let rows = [
   Row(
     name: "not-installed", state: .notInstalled,
     display: .init(
-      title: "音声認識モデルは未取得です", body: "ダウンロードの容量は 662 MB です。", isFailure: false,
+      title: "音声認識モデルは未取得です", body: "ダウンロードの容量は 769 MB です。", isFailure: false,
       primary: download)),
   Row(
-    name: "downloading",
-    state: .downloading(receivedBytes: 245_200_000, totalBytes: 662_469_229),
+    name: "diarization-model-missing", state: .diarizationModelMissing,
     display: .init(
-      title: "ダウンロードしています…", body: "37%(245 MB / 662 MB)", isFailure: false, primary: nil)),
+      title: "話者分離のモデルは未取得です", body: "話者を分けるときに使います。ダウンロードの容量は 106 MB です。",
+      isFailure: false, primary: download)),
+  Row(
+    name: "downloading",
+    state: .downloading(receivedBytes: 245_200_000, totalBytes: 768_648_717),
+    display: .init(
+      title: "ダウンロードしています…", body: "31%(245 MB / 769 MB)", isFailure: false, primary: nil)),
   Row(
     name: "verifying", state: .verifying,
     display: .init(title: "ダウンロードしたファイルを確認しています…", body: nil, isFailure: false, primary: nil)),
@@ -135,6 +140,20 @@ func settingsTextMatchesTable(name: String) throws {
         content, height: 240, appearance: appearance,
         to: directory.appending(path: "\(row.name)-\(suffix).png"))
     }
+  }
+  let transcriptionSuite = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
+  defer { UserDefaults().removePersistentDomain(forName: transcriptionSuite) }
+  let transcription = TranscriptionSetting(
+    defaults: try #require(UserDefaults(suiteName: transcriptionSuite)))
+  transcription.setSeparateSpeakers(true)
+  for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+    let content = Form {
+      Section("音声認識") { TranscriptionSettingsView(setting: transcription) }
+    }
+    .formStyle(.grouped)
+    try writeSnapshot(
+      content, height: 160, appearance: appearance,
+      to: directory.appending(path: "transcription-settings-\(suffix).png"))
   }
   let suiteName = "SpeechSettingsSnapshotTests-\(UUID().uuidString)"
   defer { UserDefaults().removePersistentDomain(forName: suiteName) }

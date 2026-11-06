@@ -9,6 +9,7 @@ enum TranscriptionText {
     case .setupRequired: "文字起こしを始められませんでした"
     case .failed(.recognitionFailed, _), .failed(.audioUnreadable, _): "文字起こしできませんでした"
     case .failed(.saveFailed, _): "文字起こしを保存できませんでした"
+    case .finishedWithoutSpeakers: "話者を分けずに文字起こししました"
     }
   }
 
@@ -22,6 +23,10 @@ enum TranscriptionText {
     case .failed(.audioUnreadable, let meeting):
       "録音のファイルを読み込めませんでした。\(meeting) に recording.caf があるかを確かめてください。"
     case .failed(.saveFailed, _): "空き容量とフォルダーのアクセス権を確かめてください。"
+    case .finishedWithoutSpeakers(.modelMissing, _):
+      "話者分離のモデルが未取得です。「設定…」の「音声認識」でダウンロードすると、次の文字起こしから話者を分けます。"
+    case .finishedWithoutSpeakers(.failed, let meeting):
+      "話者分離が失敗しました。\(meeting) の transcription.log を添えて \(RecordingText.issuesURL) に報告してください。"
     }
   }
 }
