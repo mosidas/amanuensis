@@ -4,15 +4,25 @@ import os
 
 private let logger = Logger(subsystem: "io.github.mosidas.amanuensis", category: "capture")
 
+/// 拒否されている録音の権限を `Permission.allCases` の順で返す。確認を出さず、未確認の権限は含めない。
+func deniedRecordingPermissions() -> [Permission] {
+  var denied: [Permission] = []
+  if AVCaptureDevice.authorizationStatus(for: .audio).refusesRecording {
+    denied.append(.microphone)
+  }
+  if SystemAudioAccess.current() == .denied { denied.append(.systemAudio) }
+  return denied
+}
+
 /// 録音に足りない権限を `Permission.allCases` の順で返す。値は保存せず、呼ぶたびに今の状態から判定する。
 /// マイクとシステムオーディオ録音が未確認なら確認を出して答えを待つ。
 func checkRecordingPermissions() async -> [Permission] {
   var missing: [Permission] = []
-  switch AVCaptureDevice.authorizationStatus(for: .audio) {
-  case .authorized: break
-  case .notDetermined:
+  let microphone = AVCaptureDevice.authorizationStatus(for: .audio)
+  if microphone == .notDetermined {
     if await !AVCaptureDevice.requestAccess(for: .audio) { missing.append(.microphone) }
-  default: missing.append(.microphone)
+  } else if microphone.refusesRecording {
+    missing.append(.microphone)
   }
   switch SystemAudioAccess.current() {
   case .granted: break
@@ -23,6 +33,11 @@ func checkRecordingPermissions() async -> [Permission] {
     logger.error("permission check unavailable error.type=tcc_unavailable app.error.origin=system")
   }
   return missing
+}
+
+extension AVAuthorizationStatus {
+  /// 録音を許していない。未確認は含めず、SDK で増えた値は許していないに数える。
+  fileprivate var refusesRecording: Bool { self != .authorized && self != .notDetermined }
 }
 
 /// システムオーディオ録音の許可の状態。

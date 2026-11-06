@@ -17,11 +17,12 @@ typealias StartCapture =
 struct Recording: Equatable {
   let startedAt: Date
   let folder: URL
+  let trigger: RecordingTrigger
   fileprivate let session: CaptureSession
   fileprivate let activity: any NSObjectProtocol
 
   static func == (lhs: Recording, rhs: Recording) -> Bool {
-    lhs.startedAt == rhs.startedAt && lhs.folder == rhs.folder
+    lhs.startedAt == rhs.startedAt && lhs.folder == rhs.folder && lhs.trigger == rhs.trigger
   }
 }
 
@@ -61,8 +62,8 @@ enum RecorderState: Equatable {
     self.startTimeout = startTimeout
   }
 
-  /// 待機中のときだけ録音を始める。
-  func start() async {
+  /// 待機中のときだけ録音を始める。`trigger` は誰が始めたかで、録音が持つ。
+  func start(trigger: RecordingTrigger = .manual) async {
     guard state == .idle else { return }
     state = .starting
     let missing = await missingPermissions()
@@ -121,9 +122,13 @@ enum RecorderState: Equatable {
       refuse(problem)
       return
     }
-    logger.info("recording started folder.name=\(meeting.lastPathComponent, privacy: .public)")
+    logger.info(
+      "recording started trigger=\(trigger.logName, privacy: .public) folder.name=\(meeting.lastPathComponent, privacy: .public)"
+    )
     state = .recording(
-      Recording(startedAt: startedAt, folder: meeting, session: session, activity: activity))
+      Recording(
+        startedAt: startedAt, folder: meeting, trigger: trigger, session: session,
+        activity: activity))
   }
 
   /// 録音中のときだけ取り込みを止めてファイルを閉じる。
@@ -235,10 +240,19 @@ enum RecorderState: Equatable {
 private struct StartTimeout: Error {}
 
 extension Permission {
-  fileprivate var logName: String {
+  var logName: String {
     switch self {
     case .microphone: "microphone"
     case .systemAudio: "system_audio"
+    }
+  }
+}
+
+extension RecordingTrigger {
+  fileprivate var logName: String {
+    switch self {
+    case .manual: "manual"
+    case .meeting: "meeting"
     }
   }
 }

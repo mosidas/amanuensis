@@ -177,6 +177,7 @@ private struct MenuRow {
   let name: String
   let state: RecorderState?
   var elapsed: TimeInterval = 0
+  var blockedBy: [Permission] = []
   let entries: [MenuContent.Entry]
 }
 
@@ -206,16 +207,45 @@ private struct MenuRow {
     MenuRow(
       name: "finishing", state: .finishing,
       entries: [.item("録音を保存しています…", nil), recordings, settings, .separator, quit]),
+    MenuRow(
+      name: "idle-blocked-microphone", state: .idle, blockedBy: [.microphone],
+      entries: [
+        .item("録音を開始", .start), .separator, .item("会議の検知を停止しています", nil),
+        .item("マイクの使用が許可されていません", nil), .item("システム設定を開く", .systemSettings(.microphone)),
+        .separator, recordings, settings, .separator, quit,
+      ]),
+    MenuRow(
+      name: "idle-blocked-system-audio", state: .idle, blockedBy: [.systemAudio],
+      entries: [
+        .item("録音を開始", .start), .separator, .item("会議の検知を停止しています", nil),
+        .item("システム音声の録音が許可されていません", nil),
+        .item("システム設定を開く", .systemSettings(.systemAudio)), .separator, recordings, settings,
+        .separator,
+        quit,
+      ]),
+    MenuRow(
+      name: "recording-blocked-both", state: nil, elapsed: 12,
+      blockedBy: [.microphone, .systemAudio],
+      entries: [
+        .item("録音中 0:00:12", nil), .item("停止", .stop), .item("破棄…", .discard), .separator,
+        .item("会議の検知を停止しています", nil), .item("マイクとシステム音声の録音が許可されていません", nil),
+        .item("システム設定を開く", .systemSettings(.microphone)), .separator, recordings, settings,
+        .separator,
+        quit,
+      ]),
   ]
   for row in rows {
     if let state = row.state {
-      #expect(MenuContent.entries(for: state, now: .now) == row.entries, "\(row.name)")
+      #expect(
+        MenuContent.entries(for: state, now: .now, detectionBlockedBy: row.blockedBy)
+          == row.entries, "\(row.name)")
       continue
     }
     try await withRecording { state, startedAt in
       #expect(
-        MenuContent.entries(for: state, now: startedAt.addingTimeInterval(row.elapsed))
-          == row.entries, "\(row.name)")
+        MenuContent.entries(
+          for: state, now: startedAt.addingTimeInterval(row.elapsed),
+          detectionBlockedBy: row.blockedBy) == row.entries, "\(row.name)")
     }
   }
 }

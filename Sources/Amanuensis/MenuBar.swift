@@ -117,20 +117,23 @@ final class MenuBar: NSObject {
   }
 
   private func observe() {
-    let (state, transcribing) = withObservationTracking {
-      (recorder.state, transcriber.current)
+    let (state, transcribing, blockedBy) = withObservationTracking {
+      (recorder.state, transcriber.current, meetingWatcher.blockedBy)
     } onChange: {
       Task { @MainActor [weak self] in self?.observe() }
     }
-    render(state, transcribing: transcribing)
+    render(state, transcribing: transcribing, detectionBlockedBy: blockedBy)
   }
 
-  private func render(_ state: RecorderState, transcribing: URL?) {
+  private func render(_ state: RecorderState, transcribing: URL?, detectionBlockedBy: [Permission])
+  {
     statusItem.button?.image = Self.icon(
       for: state, transcribing: transcribing != nil, resources: Bundle.main.resourceURL)
 
     menu.removeAllItems()
-    for entry in entries(for: state, transcribing: transcribing) {
+    for entry in entries(
+      for: state, transcribing: transcribing, detectionBlockedBy: detectionBlockedBy)
+    {
       menu.addItem(item(for: entry))
     }
 
@@ -147,15 +150,19 @@ final class MenuBar: NSObject {
 
   /// 経過時間の行の題だけを今の時刻で書き直す。行の並びは状態が変わるまで変わらない。
   private func tick() {
-    for (item, entry) in zip(
-      menu.items, entries(for: recorder.state, transcribing: transcriber.current))
-    {
+    let current = entries(
+      for: recorder.state, transcribing: transcriber.current,
+      detectionBlockedBy: meetingWatcher.blockedBy)
+    for (item, entry) in zip(menu.items, current) {
       if case .item(let title, _) = entry { item.title = title }
     }
   }
 
-  private func entries(for state: RecorderState, transcribing: URL?) -> [MenuContent.Entry] {
-    MenuContent.transcriptionEntries(for: transcribing) + MenuContent.entries(for: state, now: .now)
+  private func entries(
+    for state: RecorderState, transcribing: URL?, detectionBlockedBy: [Permission]
+  ) -> [MenuContent.Entry] {
+    MenuContent.transcriptionEntries(for: transcribing)
+      + MenuContent.entries(for: state, now: .now, detectionBlockedBy: detectionBlockedBy)
   }
 
   private func item(for entry: MenuContent.Entry) -> NSMenuItem {
@@ -172,6 +179,9 @@ final class MenuBar: NSObject {
     case .quit:
       item.action = #selector(NSApplication.terminate(_:))
       item.keyEquivalent = "q"
+    case .systemSettings(let permission):
+      item.action = #selector(openSystemSettings(_:))
+      item.representedObject = permission.settingsURL
     case nil: break
     }
     item.target = action == .quit ? NSApp : self
@@ -197,6 +207,11 @@ final class MenuBar: NSObject {
     NSApp.activate()
     guard alert.runModal() == .alertFirstButtonReturn else { return }
     Task { await recorder.discard() }
+  }
+
+  @objc private func openSystemSettings(_ sender: NSMenuItem) {
+    guard let url = sender.representedObject as? URL else { return }
+    NSWorkspace.shared.open(url)
   }
 
   @objc private func openRecordings(_ sender: NSMenuItem) {

@@ -76,9 +76,13 @@ extension Permission {
   }
 }
 
-/// メニューバーのメニューとアイコン。録音の状態から一意に決まる。
+/// メニューバーのメニューとアイコン。録音の状態と会議の検知を止めている権限から一意に決まる。
 enum MenuContent {
-  enum Action { case start, stop, discard, recordings, settings, quit }
+  enum Action: Equatable {
+    case start, stop, discard, recordings, settings, quit
+    /// システム設定のこの権限の画面を開く。
+    case systemSettings(Permission)
+  }
 
   enum Entry: Equatable {
     /// `action` が nil の行は押せない。
@@ -86,7 +90,10 @@ enum MenuContent {
     case separator
   }
 
-  static func entries(for state: RecorderState, now: Date) -> [Entry] {
+  /// `detectionBlockedBy` は会議の検知を止めている(拒否されている)権限。空なら検知の行を出さない。
+  static func entries(for state: RecorderState, now: Date, detectionBlockedBy: [Permission])
+    -> [Entry]
+  {
     let head: [Entry] =
       switch state {
       case .idle: [.item("録音を開始", .start)]
@@ -98,7 +105,17 @@ enum MenuContent {
         ]
       case .finishing: [.item("録音を保存しています…", nil)]
       }
-    return head + [
+    let detection: [Entry] =
+      if let first = detectionBlockedBy.first {
+        [
+          .separator, .item("会議の検知を停止しています", nil),
+          .item(RecordingText.title(for: .missingPermissions(detectionBlockedBy)), nil),
+          .item("システム設定を開く", .systemSettings(first)), .separator,
+        ]
+      } else {
+        []
+      }
+    return head + detection + [
       .item("録音の一覧…", .recordings), .item("設定…", .settings), .separator,
       .item("amanuensis を終了", .quit),
     ]

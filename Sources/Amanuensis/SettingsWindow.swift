@@ -36,6 +36,9 @@ private struct SettingsView: View {
         RecordingSettingsView(
           folder: RecordingFolder(), microphone: MicrophoneSetting(), microphones: microphones)
       }
+      Section("会議の検知") {
+        MeetingDetectionSettingsView(setting: MeetingDetectionSetting())
+      }
       Section("音声認識") {
         SpeechSettingsView(state: speechSetup.state, installation: speechSetup.installation) {
           action in
