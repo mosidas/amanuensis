@@ -24,9 +24,14 @@ private struct SpeechOutputLine: Decodable {
 }
 
 private struct UnexpectedFile: Error {}
+private struct UnexpectedTime: Error {}
 
-/// speech の標準出力を語の列にする。`file` が `chunks` のどれでもない行・デコードできない行・`tokens` の無い行は投げる。
-/// `text` が空の語は捨てる。区間の最初の語は次の語の始まりの時刻にする。
+// 120 秒: 区間は最長 60 秒(`TranscriptionAudio.swift`)。区間の中の時刻がそれを大きく超えることは無いので倍の余裕を取る。
+private let maxTokenSeconds: TimeInterval = 120
+
+/// speech の標準出力を語の列にする。`file` が `chunks` のどれでもない行・デコードできない行・`tokens` の無い行・
+/// 時刻が `0 <= start <= end <= 120` でない語のある行は投げる。
+/// `text` が空の語は捨て、`text` の制御文字と U+2028・U+2029 は除く。区間の最初の語は次の語の始まりの時刻にする。
 func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [RecognizedToken] {
   let offsets = Dictionary(uniqueKeysWithValues: chunks.map { ($0.file.path, $0.offset) })
   let decoder = JSONDecoder()
@@ -37,14 +42,25 @@ func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [Recognize
     // speech は区間の最初の語を、音声の始まりにかかわらず start=0 で出す(実測: 2.95 秒から話し始める区間で
     // `(0, 0.32, "これは"), (3.6, 3.76, "ア")`)。普通は空の text だが、無音で始まる区間では実在の語が来る。
     var raw = output.tokens
+    guard raw.allSatisfy({ 0 <= $0.start && $0.start <= $0.end && $0.end <= maxTokenSeconds })
+    else { throw UnexpectedTime() }
     if raw.count > 1 {
       raw[0] = .init(start: raw[1].start, end: raw[1].start, text: raw[0].text)
     }
-    tokens += raw.filter { !$0.text.isEmpty }.map {
-      RecognizedToken(start: $0.start + offset, end: $0.end + offset, text: $0.text)
-    }
+    tokens += raw.map {
+      RecognizedToken(start: $0.start + offset, end: $0.end + offset, text: lineSafe($0.text))
+    }.filter { !$0.text.isEmpty }
   }
   return tokens
+}
+
+/// 段落を 1 行に保つため、改行・CR・ESC などの制御文字(Cc)と行・段落の区切り(U+2028・U+2029)を除く。
+private func lineSafe(_ text: String) -> String {
+  String(
+    String.UnicodeScalarView(
+      text.unicodeScalars.filter {
+        $0.properties.generalCategory != .control && $0 != "\u{2028}" && $0 != "\u{2029}"
+      }))
 }
 
 /// 前の語の終わりから次の語の始まりまでが 1.5 秒以上なら段落を分け、段落の本文は語を連結する。

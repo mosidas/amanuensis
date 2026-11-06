@@ -48,6 +48,7 @@ func runSpeech(_ executable: URL, _ arguments: [String], timeout: Duration)
     throw SpeechFailure(type: "launch_failed", status: nil, stderr: Data())
   }
   // 片方のパイプだけを読むと、もう片方が埋まった時点で子が書き込みで止まる。
+  // shortcut: 標準出力・標準エラー出力を上限なしでメモリに保持する, speech が出力し続けてメモリが膨らむ報告があれば標準エラー出力は末尾だけを残し標準出力は上限で子を止める
   async let stdout = readToEnd(output)
   async let stderr = readToEnd(errorOutput)
   let timer = Task { () -> Bool in

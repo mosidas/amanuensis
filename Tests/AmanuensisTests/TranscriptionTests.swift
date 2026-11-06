@@ -66,9 +66,26 @@ private let chunks = [
   #"{"file":"/tmp/t/other.wav","tokens":[]}"#,
   #"{"file":"/tmp/t/chunk-0001.wav"}"#,
   "not json",
+  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":1e300,"end":1e300,"text":"あ"}]}"#,
+  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":-5,"end":0.2,"text":"あ"}]}"#,
+  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":2.0,"end":1.0,"text":"あ"}]}"#,
+  #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":0,"end":0.2,"text":""},{"start":1e300,"end":1e300,"text":"あ"}]}"#,
 ])
 func recognizedTokensRejectUnexpectedOutput(line: String) {
   #expect(throws: (any Error).self) { try recognizedTokens(Data(line.utf8), chunks: chunks) }
+}
+
+@Test func controlCharactersInWordsDoNotAddParagraphsOrLines() throws {
+  let stdout = Data(
+    #"{"file":"/tmp/t/chunk-0001.wav","tokens":[{"start":1,"end":1.2,"text":"前\n\n[00:00:00] 偽の段落\r\u001b[31m赤\u2028後\u2029終"}]}"#
+      .utf8)
+  let transcript = Transcript(
+    meetingName: "2026-11-06_100000", duration: 2, model: "m",
+    paragraphs: paragraphs(try recognizedTokens(stdout, chunks: chunks)))
+  #expect(
+    transcript.markdown.split(separator: "\n").filter { $0.hasPrefix("[") } == [
+      "[00:00:01] 前[00:00:00] 偽の段落[31m赤後終"
+    ])
 }
 
 private func temporaryDirectory(_ name: String) throws -> URL {

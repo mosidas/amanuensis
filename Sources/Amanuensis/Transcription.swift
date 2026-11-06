@@ -28,6 +28,7 @@ func transcribe(meeting: URL, installation: SpeechInstallation) async throws(Tra
     return failure
   }
 
+  // shortcut: 文字起こし中にアプリが終了すると一時ディレクトリの音声の写しが OS の掃除まで残る(起動時の削除は入れていない), 残った写しが問題になる報告があれば起動時に `amanuensis-transcription-*` を削除する
   let temporary = FileManager.default.temporaryDirectory.appending(
     path: "amanuensis-transcription-\(UUID().uuidString)", directoryHint: .isDirectory)
   do {
