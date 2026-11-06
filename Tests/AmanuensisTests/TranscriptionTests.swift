@@ -42,6 +42,26 @@ private let chunks = [
     ])
 }
 
+@Test func firstWordOfChunkStartingInSilenceTakesTimeOfNextWord() throws {
+  let stdout = Data(
+    """
+    {"file":"/tmp/t/chunk-0001.wav","text":"あ","tokens":[{"start":0,"end":0.24,"text":""},{"start":49.7,"end":50.0,"text":"あ"}]}
+    {"file":"/tmp/t/chunk-0002.wav","text":"これはア","tokens":[{"start":0,"end":0.32,"text":"これは"},{"start":3.6,"end":3.76,"text":"ア"}]}
+
+    """.utf8)
+  let tokens = try recognizedTokens(stdout, chunks: chunks)
+  #expect(
+    tokens == [
+      token(49.7, 50.0, "あ"), token(50.05 + 3.6, 50.05 + 3.6, "これは"),
+      token(50.05 + 3.6, 50.05 + 3.76, "ア"),
+    ])
+  #expect(
+    paragraphs(tokens) == [
+      TranscriptParagraph(start: 49.7, text: "あ"),
+      TranscriptParagraph(start: 50.05 + 3.6, text: "これはア"),
+    ], "区間の頭の語は前の区間の段落に付かない")
+}
+
 @Test(arguments: [
   #"{"file":"/tmp/t/other.wav","tokens":[]}"#,
   #"{"file":"/tmp/t/chunk-0001.wav"}"#,
@@ -364,6 +384,7 @@ func transcribeFixtureWithBundledModel(name: String) async throws {
     let cer = characterErrorRate(paragraph.text, reference: reference)
     print("cer \(name) [\(paragraph.seconds)] \(String(format: "%.4f", cer))")
     #expect(cer <= selfCheckMaxCER, "段落 \(paragraph.seconds) 秒の CER \(cer)")
+    #expect(paragraph.text.hasPrefix("これは"), "段落 \(paragraph.seconds) 秒が回の冒頭で始まる")
     #expect(
       abs(Double(paragraph.seconds) - start) <= 2, "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
   }

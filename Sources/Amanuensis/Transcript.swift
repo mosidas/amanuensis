@@ -26,7 +26,7 @@ private struct SpeechOutputLine: Decodable {
 private struct UnexpectedFile: Error {}
 
 /// speech の標準出力を語の列にする。`file` が `chunks` のどれでもない行・デコードできない行・`tokens` の無い行は投げる。
-/// `text` が空の語は捨てる。
+/// `text` が空の語は捨てる。区間の最初の語は次の語の始まりの時刻にする。
 func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [RecognizedToken] {
   let offsets = Dictionary(uniqueKeysWithValues: chunks.map { ($0.file.path, $0.offset) })
   let decoder = JSONDecoder()
@@ -34,7 +34,13 @@ func recognizedTokens(_ stdout: Data, chunks: [AudioChunk]) throws -> [Recognize
   for line in stdout.split(separator: UInt8(ascii: "\n")) {
     let output = try decoder.decode(SpeechOutputLine.self, from: Data(line))
     guard let offset = offsets[output.file] else { throw UnexpectedFile() }
-    tokens += output.tokens.filter { !$0.text.isEmpty }.map {
+    // speech は区間の最初の語を、音声の始まりにかかわらず start=0 で出す(実測: 2.95 秒から話し始める区間で
+    // `(0, 0.32, "これは"), (3.6, 3.76, "ア")`)。普通は空の text だが、無音で始まる区間では実在の語が来る。
+    var raw = output.tokens
+    if raw.count > 1 {
+      raw[0] = .init(start: raw[1].start, end: raw[1].start, text: raw[0].text)
+    }
+    tokens += raw.filter { !$0.text.isEmpty }.map {
       RecognizedToken(start: $0.start + offset, end: $0.end + offset, text: $0.text)
     }
   }
