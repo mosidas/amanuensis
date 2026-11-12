@@ -102,6 +102,26 @@ private func mean(_ samples: ArraySlice<Float>) -> Float {
   }
 }
 
+@Test func keepsLeftChannelAcrossMicrophoneFormatChange() throws {
+  try withTemporaryFile { url in
+    let writer = try StereoRecordingWriter(url: url)
+    try feed(writer, .microphone, constant(0.5), seconds: 1)
+    try feed(writer, .microphone, constant(0.5, sampleRate: 16_000), from: 1.2, seconds: 1.8)
+    try feed(writer, .systemAudio, constant(-0.5), seconds: 3)
+    _ = try writer.finish()
+
+    let recorded = try Recorded(url)
+    #expect(abs(recorded.file.length - 144_000) <= 100)
+    #expect(abs(mean(recorded.left[Int(0.1 * rate)..<Int(0.9 * rate)]) - 0.5) < 0.01, "替える前のマイク")
+    #expect(
+      recorded.left[Int(1.05 * rate)..<Int(1.15 * rate)].allSatisfy { $0 == 0 }, "替える間は無音")
+    #expect(
+      abs(mean(recorded.left[Int(1.4 * rate)..<Int(2.8 * rate)]) - 0.5) < 0.01,
+      "16 kHz のマイクに替えた後も左に同じ大きさで入る")
+    #expect(recorded.right.allSatisfy { abs($0 + 0.5) < 0.001 }, "右のシステム音声は途切れない")
+  }
+}
+
 @Test func fillsSilenceBeforeLateSource() throws {
   try withTemporaryFile { url in
     let writer = try StereoRecordingWriter(url: url)

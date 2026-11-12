@@ -96,15 +96,22 @@ nonisolated func audioDevice(_ id: AudioObjectID) -> AudioDevice? {
   return AudioDevice(id: id, uid: uid, name: deviceName(id) ?? uid, hasInput: hasInput)
 }
 
-/// システムの既定の入力デバイス。既定が無いか読めなければ nil。
+/// システムの既定の入力デバイス。既定が無いか読めなければ nil。読めなかったときだけログに残す。
 nonisolated func readDefaultInput() -> AudioDevice? {
   var id = AudioObjectID(kAudioObjectUnknown)
-  guard
-    read(
-      AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, into: &id)
-      == noErr, id != kAudioObjectUnknown
-  else { return nil }
-  return audioDevice(id)
+  let status = read(
+    AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, into: &id)
+  guard status == noErr else {
+    logger.warning(
+      "microphones read failed error.type=\(status, privacy: .public) app.error.origin=system")
+    return nil
+  }
+  guard id != kAudioObjectUnknown else { return nil }
+  guard let device = audioDevice(id) else {
+    logger.warning("microphones read failed error.type=uid_unreadable app.error.origin=system")
+    return nil
+  }
+  return device
 }
 
 nonisolated func readInputDevices() -> [AudioDevice] { inputDevices(from: readAudioDevices()) }

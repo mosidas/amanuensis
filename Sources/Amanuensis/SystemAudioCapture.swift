@@ -143,7 +143,7 @@ nonisolated private func openCapture(
   }
   let startMilliseconds = Int((ContinuousClock.now - begin) / .milliseconds(1))
   logger.notice(
-    "capture started microphone=\(Int(prepared.microphoneFormat.sampleRate), privacy: .public)/\(prepared.microphoneFormat.channelCount, privacy: .public) system_audio=\(Int(prepared.systemAudio.sampleRate), privacy: .public)/\(prepared.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public) microphone.choice=\(microphone == .systemDefault ? "default" : "device", privacy: .public) microphone.uid=\(prepared.microphone.uid, privacy: .public) microphone.name=\(String(reflecting: prepared.microphone.name), privacy: .public)"
+    "capture started microphone=\(Int(prepared.microphoneFormat.sampleRate), privacy: .public)/\(prepared.microphoneFormat.channelCount, privacy: .public) system_audio=\(Int(prepared.systemAudio.sampleRate), privacy: .public)/\(prepared.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public) microphone.choice=\(microphone == .systemDefault ? "default" : "device", privacy: .public) microphone.uid=\(String(reflecting: prepared.microphone.uid), privacy: .public) microphone.name=\(String(reflecting: prepared.microphone.name), privacy: .public)"
   )
   return CaptureSession {
     pipe.markStopping()
@@ -161,15 +161,24 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
   -> (microphone: AudioDevice, microphoneFormat: AVAudioFormat, systemAudio: AVAudioFormat)
 {
   let system = AudioObjectID(kAudioObjectSystemObject)
-  let microphone: AudioDevice
+  let microphone: (device: AudioDevice, format: AVAudioFormat)
   switch choice {
   case .systemDefault:
-    guard let defaultInput = readDefaultInput() else { throw .noInputDevice }
-    microphone = defaultInput
+    let follower = DefaultInputFollower(
+      open: { device, onLost throws(StartFailure) in
+        try openMicrophone(device, pipe, onLost: onLost)
+      },
+      defaultInput: readDefaultInput)
+    try watchDefaultInput(pipe) { follower.follow() }
+    // 開始に失敗したときにも、先に届いた通知の照合でマイクを開かないよう、開く前に積む。
+    pipe.teardown.add { follower.stop() }
+    microphone = try follower.start()
   case .device(let uid, let name):
-    microphone = try selectedMicrophone(uid: uid, name: name, in: readInputDevices())
+    let device = try selectedMicrophone(uid: uid, name: name, in: readInputDevices())
+    let opened = try openMicrophone(device, pipe) { pipe.interrupt(source: .microphone) }
+    pipe.teardown.add(opened.close)
+    microphone = (device, opened.format)
   }
-  let microphoneFormat = try inputFormat(of: microphone.id)
 
   var ownProcess = AudioObjectID(kAudioObjectUnknown)
   let translated = read(
@@ -207,40 +216,75 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
     stopCheck(AudioHardwareDestroyAggregateDevice(aggregate), "destroy")
   }
 
-  let devices = [
-    (aggregate, RecordingSource.systemAudio, systemFormat),
-    (microphone.id, RecordingSource.microphone, microphoneFormat),
-  ]
-  var procs: [AudioDeviceIOProcID] = []
-  for (device, source, format) in devices {
-    var proc: AudioDeviceIOProcID?
-    try check(
-      AudioDeviceCreateIOProcIDWithBlock(
-        &proc, device, pipe.ioQueue, pipe.ioBlock(for: source, format: format)),
-      "create_ioproc")
-    guard let proc else { throw .failed(step: "create_ioproc", type: "no_ioproc") }
-    pipe.teardown.add { stopCheck(AudioDeviceDestroyIOProcID(device, proc), "destroy") }
-    procs.append(proc)
+  try startReading(aggregate, as: .systemAudio, format: systemFormat, pipe, into: pipe.teardown) {
+    pipe.interrupt(source: .systemAudio)
   }
-  for ((device, _, _), proc) in zip(devices, procs) {
-    try check(AudioDeviceStart(device, proc), "start_device")
-    pipe.teardown.add { stopCheck(AudioDeviceStop(device, proc), "stop_device") }
+  return (microphone.device, microphone.format, systemFormat)
+}
+
+/// `device` の入力を読み始める。読めなくなったら `onLost` を呼ぶ。開くたびに作ったものを壊す手順は `close` にまとめる。
+nonisolated private func openMicrophone(
+  _ device: AudioDevice, _ pipe: CapturePipe, onLost: @escaping @Sendable () -> Void
+) throws(StartFailure) -> OpenedMicrophone {
+  let format = try inputFormat(of: device.id)
+  let teardown = Teardown()
+  do throws(StartFailure) {
+    try startReading(
+      device.id, as: .microphone, format: format, pipe, into: teardown, onLost: onLost)
+  } catch {
+    teardown.run()
+    throw error
   }
-  for (device, source, _) in devices {
+  return OpenedMicrophone(format: format) { teardown.run() }
+}
+
+/// `device` に IOProc を張って始め、デバイスが無くなったら `onLost` を呼ぶリスナーを付ける。壊す手順は `teardown` に積む。
+nonisolated private func startReading(
+  _ device: AudioObjectID, as source: RecordingSource, format: AVAudioFormat, _ pipe: CapturePipe,
+  into teardown: Teardown, onLost: @escaping @Sendable () -> Void
+) throws(StartFailure) {
+  var proc: AudioDeviceIOProcID?
+  try check(
+    AudioDeviceCreateIOProcIDWithBlock(
+      &proc, device, pipe.ioQueue, pipe.ioBlock(for: source, format: format)),
+    "create_ioproc")
+  guard let proc else { throw .failed(step: "create_ioproc", type: "no_ioproc") }
+  teardown.add { stopCheck(AudioDeviceDestroyIOProcID(device, proc), "destroy") }
+  try check(AudioDeviceStart(device, proc), "start_device")
+  teardown.add { stopCheck(AudioDeviceStop(device, proc), "stop_device") }
+  var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
+  // AudioObjectRemovePropertyListenerBlock は付けたときと同じ block を求める(AudioHardware.h)。
+  let listener = pipe.aliveListener(for: device, onLost: onLost)
+  try check(
+    AudioObjectAddPropertyListenerBlock(device, &address, pipe.writerQueue, listener),
+    "add_listener")
+  teardown.add {
     var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
-    // AudioObjectRemovePropertyListenerBlock は付けたときと同じ block を求める(AudioHardware.h)。
-    let listener = pipe.aliveListener(for: device, source: source)
-    try check(
-      AudioObjectAddPropertyListenerBlock(device, &address, pipe.writerQueue, listener),
-      "add_listener")
-    pipe.teardown.add {
-      var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
-      stopCheck(
-        AudioObjectRemovePropertyListenerBlock(device, &address, pipe.writerQueue, listener),
-        "destroy")
-    }
+    stopCheck(
+      AudioObjectRemovePropertyListenerBlock(device, &address, pipe.writerQueue, listener),
+      "destroy")
   }
-  return (microphone, microphoneFormat, systemFormat)
+}
+
+/// システムの既定の入力が変わるたびに、writerQueue の上で `onChange` を呼ぶ。外す手順は `pipe.teardown` に積む。
+nonisolated private func watchDefaultInput(
+  _ pipe: CapturePipe, _ onChange: @escaping @Sendable () -> Void
+) throws(StartFailure) {
+  let system = AudioObjectID(kAudioObjectSystemObject)
+  var address = propertyAddress(kAudioHardwarePropertyDefaultInputDevice)
+  let listener:
+    @Sendable @convention(block) (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void = {
+      _, _ in onChange()
+    }
+  try check(
+    AudioObjectAddPropertyListenerBlock(system, &address, pipe.writerQueue, listener),
+    "add_listener")
+  pipe.teardown.add {
+    var address = propertyAddress(kAudioHardwarePropertyDefaultInputDevice)
+    stopCheck(
+      AudioObjectRemovePropertyListenerBlock(system, &address, pipe.writerQueue, listener),
+      "destroy")
+  }
 }
 
 /// 入力デバイスの先頭の入力ストリームの形式。IOProc はこの形式でバッファーを渡す。
@@ -383,21 +427,26 @@ private final class CapturePipe: @unchecked Sendable {
     }
   }
 
-  /// writerQueue の上で呼ばれる block。デバイスが無くなったら取り込みを終える。
-  nonisolated func aliveListener(for device: AudioObjectID, source: RecordingSource)
-    -> @Sendable @convention(block) (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void
-  {
+  /// writerQueue の上で呼ばれる block。取り込みを終える前にデバイスが無くなったら `onLost` を呼ぶ。
+  nonisolated func aliveListener(
+    for device: AudioObjectID, onLost: @escaping @Sendable () -> Void
+  ) -> @Sendable @convention(block) (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void {
     { [self] _, _ in
       var alive: UInt32 = 1
       guard read(device, kAudioDevicePropertyDeviceIsAlive, into: &alive) != noErr || alive == 0,
         !ended
       else { return }
-      let name = source == .microphone ? "microphone" : "system_audio"
-      logger.error(
-        "capture interrupted error.type=device_not_alive source=\(name, privacy: .public) app.error.origin=system"
-      )
-      end(.interrupted)
+      onLost()
     }
+  }
+
+  /// `source` のデバイスを失ったとして取り込みを終える。writerQueue の上で呼ぶ。
+  func interrupt(source: RecordingSource) {
+    let name = source == .microphone ? "microphone" : "system_audio"
+    logger.error(
+      "capture interrupted error.type=device_not_alive source=\(name, privacy: .public) app.error.origin=system"
+    )
+    end(.interrupted)
   }
 
   /// 停止を始めた印を立てる。壊す処理より前に呼ぶ。届いた音声はこの後も書く。
