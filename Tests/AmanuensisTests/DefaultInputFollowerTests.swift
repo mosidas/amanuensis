@@ -17,7 +17,7 @@ private final class FakeMicrophones: Sendable {
   }
 
   private struct State {
-    var defaults: [AudioDevice?]
+    var defaults: [DefaultInput]
     var events: [Event] = []
     var onLost: [AudioObjectID: @Sendable () -> Void] = [:]
   }
@@ -25,7 +25,7 @@ private final class FakeMicrophones: Sendable {
   private let state: OSAllocatedUnfairLock<State>
   private let failing: Set<AudioObjectID>
 
-  init(defaults: [AudioDevice?], failing: Set<AudioObjectID> = []) {
+  init(defaults: [DefaultInput], failing: Set<AudioObjectID> = []) {
     state = OSAllocatedUnfairLock(initialState: State(defaults: defaults))
     self.failing = failing
   }
@@ -41,9 +41,9 @@ private final class FakeMicrophones: Sendable {
     state.withLock { $0.onLost[device.id] }?()
   }
 
-  private func defaultInput() -> AudioDevice? {
+  private func defaultInput() -> DefaultInput {
     state.withLock { state in
-      state.defaults.count > 1 ? state.defaults.removeFirst() : state.defaults.first ?? nil
+      state.defaults.count > 1 ? state.defaults.removeFirst() : state.defaults[0]
     }
   }
 
@@ -64,7 +64,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func followsDefaultInputChange() throws {
-  let microphones = FakeMicrophones(defaults: [desk, headset])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .device(headset)])
   let follower = microphones.follower()
 
   let started = try follower.start()
@@ -78,7 +78,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func lostDeviceIsReplacedByNewDefault() throws {
-  let microphones = FakeMicrophones(defaults: [desk, headset])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .device(headset)])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -91,7 +91,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func lostDeviceStaysClosedWhileStillDefault() throws {
-  let microphones = FakeMicrophones(defaults: [desk, desk, headset])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .device(desk), .device(headset)])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -105,7 +105,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func lostDeviceIsReopenedWhenFollowFindsItStillDefault() throws {
-  let microphones = FakeMicrophones(defaults: [desk])
+  let microphones = FakeMicrophones(defaults: [.device(desk)])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -119,7 +119,8 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func failedSwitchKeepsCurrentDevice() throws {
-  let microphones = FakeMicrophones(defaults: [desk, headset, desk], failing: [headset.id])
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .device(headset), .device(desk)], failing: [headset.id])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -133,7 +134,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func noDefaultInputReleasesDeviceAndResumesLater() throws {
-  let microphones = FakeMicrophones(defaults: [desk, nil, usb])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .absent, .device(usb)])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -147,7 +148,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func unchangedDefaultAndFollowAfterStopDoNothing() throws {
-  let microphones = FakeMicrophones(defaults: [desk, desk, headset])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .device(desk), .device(headset)])
   let follower = microphones.follower()
 
   _ = try follower.start()
@@ -163,7 +164,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func startWithoutDefaultInputThrows() {
-  let microphones = FakeMicrophones(defaults: [nil])
+  let microphones = FakeMicrophones(defaults: [.absent])
   let follower = microphones.follower()
 
   #expect(throws: StartFailure.noInputDevice) { try follower.start() }
@@ -171,7 +172,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func followBeforeStartLeavesNoMicrophoneOpenAfterStop() throws {
-  let microphones = FakeMicrophones(defaults: [desk, headset])
+  let microphones = FakeMicrophones(defaults: [.device(desk), .device(headset)])
   let follower = microphones.follower()
 
   follower.follow()
@@ -185,7 +186,8 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func failedStartAfterFollowStillClosesOnStop() {
-  let microphones = FakeMicrophones(defaults: [desk, headset], failing: [headset.id])
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .device(headset)], failing: [headset.id])
   let follower = microphones.follower()
 
   follower.follow()
@@ -200,7 +202,7 @@ private final class FakeMicrophones: Sendable {
 }
 
 @Test func startAfterStopThrowsWithoutOpening() {
-  let microphones = FakeMicrophones(defaults: [desk])
+  let microphones = FakeMicrophones(defaults: [.device(desk)])
   let follower = microphones.follower()
 
   follower.stop()
@@ -209,4 +211,76 @@ private final class FakeMicrophones: Sendable {
   }
 
   #expect(microphones.events.isEmpty, "停止の後の開始ではマイクを開かない")
+}
+
+@Test func unreadableDefaultKeepsCurrentMicrophone() throws {
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .unreadable(type: "-1"), .device(desk)])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  follower.follow()
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .close(desk.id)],
+    "既定の入力を読めなかった照合では今のマイクを閉じず、同じ既定が読めても開き直さない")
+}
+
+@Test func unreadableDefaultSwitchesOnNextFollow() throws {
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .unreadable(type: "-1"), .device(headset)])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  follower.follow()
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .open(headset.id), .close(desk.id), .close(headset.id)],
+    "読めなかった後の照合で新しい既定を開いてから前のマイクを閉じる")
+}
+
+@Test func startWithUnreadableDefaultInputThrows() {
+  let microphones = FakeMicrophones(defaults: [.unreadable(type: "uid_unreadable")])
+  let follower = microphones.follower()
+
+  #expect(throws: StartFailure.failed(step: "find_microphone", type: "uid_unreadable")) {
+    try follower.start()
+  }
+  #expect(microphones.events.isEmpty, "既定の入力を読めなければマイクを開かない")
+}
+
+@Test func unreadableDefaultAfterLossOpensOnNextFollow() throws {
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .unreadable(type: "-1"), .device(headset)])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  microphones.lose(desk)
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .close(desk.id), .open(headset.id), .close(headset.id)],
+    "失ったマイクを閉じ、既定を読めなければ開かず、次の照合で開く")
+}
+
+@Test func failedOpenAfterLossIsRetriedOnNextFollow() throws {
+  let microphones = FakeMicrophones(
+    defaults: [.device(desk), .device(headset), .device(desk)], failing: [headset.id])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  microphones.lose(desk)
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [
+      .open(desk.id), .close(desk.id), .open(headset.id), .open(desk.id), .close(desk.id),
+    ],
+    "失ったマイクの代わりを開けなかったら、次の照合でもう一度開く")
 }

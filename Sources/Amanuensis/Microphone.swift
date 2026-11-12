@@ -96,22 +96,30 @@ nonisolated func audioDevice(_ id: AudioObjectID) -> AudioDevice? {
   return AudioDevice(id: id, uid: uid, name: deviceName(id) ?? uid, hasInput: hasInput)
 }
 
-/// システムの既定の入力デバイス。既定が無いか読めなければ nil。読めなかったときだけログに残す。
-nonisolated func readDefaultInput() -> AudioDevice? {
+/// システムの既定の入力。既定のデバイスが無い状態と、読めなかった状態を分ける。
+enum DefaultInput {
+  case device(AudioDevice)
+  case absent
+  /// `type` はログの `error.type` に出す値(OSStatus か `uid_unreadable`)。
+  case unreadable(type: String)
+}
+
+/// システムの既定の入力デバイス。読めなかったときだけログに残す。
+nonisolated func readDefaultInput() -> DefaultInput {
   var id = AudioObjectID(kAudioObjectUnknown)
   let status = read(
     AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, into: &id)
   guard status == noErr else {
     logger.warning(
       "microphones read failed error.type=\(status, privacy: .public) app.error.origin=system")
-    return nil
+    return .unreadable(type: String(status))
   }
-  guard id != kAudioObjectUnknown else { return nil }
+  guard id != kAudioObjectUnknown else { return .absent }
   guard let device = audioDevice(id) else {
     logger.warning("microphones read failed error.type=uid_unreadable app.error.origin=system")
-    return nil
+    return .unreadable(type: "uid_unreadable")
   }
-  return device
+  return .device(device)
 }
 
 nonisolated func readInputDevices() -> [AudioDevice] { inputDevices(from: readAudioDevices()) }

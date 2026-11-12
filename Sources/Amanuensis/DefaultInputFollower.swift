@@ -12,12 +12,13 @@ struct OpenedMicrophone {
 /// 録音中にシステムの既定の入力を追い、読むマイクを替える。
 /// 照合は自分の queue の上だけで行い、writerQueue と ioQueue の上では Core Audio の作成・停止・取り外しをしない。
 /// 読んでいるマイクが無くなったら閉じる。既定の入力がまだそのマイクを指す間は開かず、次の `follow` の照合で開く。
+/// 既定の入力を読めなかった照合では何も開かず閉じず、次の `follow` で照合し直す。
 final class DefaultInputFollower: @unchecked Sendable {
   private let queue = DispatchQueue(label: "io.github.mosidas.amanuensis.capture.microphone")
   private let open:
     (AudioDevice, _ onLost: @escaping @Sendable () -> Void) throws(StartFailure) ->
       OpenedMicrophone
-  private let defaultInput: () -> AudioDevice?
+  private let defaultInput: () -> DefaultInput
   // current と stopped は queue の上でだけ触る。current が nil のときはマイクを読んでいない。
   private var current: (device: AudioDevice, close: @Sendable () -> Void)?
   private var stopped = false
@@ -27,13 +28,13 @@ final class DefaultInputFollower: @unchecked Sendable {
     open:
       @escaping (AudioDevice, _ onLost: @escaping @Sendable () -> Void) throws(StartFailure)
       -> OpenedMicrophone,
-    defaultInput: @escaping () -> AudioDevice?
+    defaultInput: @escaping () -> DefaultInput
   ) {
     self.open = open
     self.defaultInput = defaultInput
   }
 
-  /// 今の既定の入力を読み始める。既定が無ければ `.noInputDevice` を投げる。
+  /// 今の既定の入力を読み始める。既定が無ければ `.noInputDevice`、読めなければ `.failed(step: "find_microphone", type:)` を投げる。
   /// `start` より前に `follow` が届いていてもよい。その照合が開いたマイクは `start` が閉じる。
   /// `start` が投げたときも、開いていたマイクは `stop` で閉じる。
   /// `stop` の後の `start` は何も開かずに `.failed(step: "find_microphone", type: "stopped")` を投げる。
@@ -41,7 +42,12 @@ final class DefaultInputFollower: @unchecked Sendable {
     try queue.sync {
       Result { () throws(StartFailure) in
         guard !stopped else { throw .failed(step: "find_microphone", type: "stopped") }
-        guard let device = defaultInput() else { throw .noInputDevice }
+        let device: AudioDevice
+        switch defaultInput() {
+        case .device(let found): device = found
+        case .absent: throw .noInputDevice
+        case .unreadable(let type): throw .failed(step: "find_microphone", type: type)
+        }
         let opened = try open(device) { [self] in lost(device) }
         let previous = current
         current = (device, opened.close)
@@ -73,7 +79,7 @@ final class DefaultInputFollower: @unchecked Sendable {
       logger.warning(
         "capture microphone lost error.type=device_not_alive app.error.origin=system microphone.uid=\(String(reflecting: device.uid), privacy: .public)"
       )
-      guard let next = defaultInput(), next.id != device.id else { return }
+      guard case .device(let next) = defaultInput(), next.id != device.id else { return }
       switchMicrophone(to: next, from: device)
     }
   }
@@ -81,18 +87,20 @@ final class DefaultInputFollower: @unchecked Sendable {
   // shortcut: HAL の呼び出しに上限を渡す API が無いため切り替えに時間の上限なし, 停止が遅れる報告があれば計測して決める
   private func reconcile() {
     guard !stopped else { return }
-    let next = defaultInput()
-    guard next?.id != current?.device.id else { return }
-    let previous = current
-    guard let next else {
-      current = nil
-      previous?.close()
-      logger.warning(
-        "capture microphone lost error.type=no_input_device app.error.origin=system microphone.uid=\(String(reflecting: previous?.device.uid ?? ""), privacy: .public)"
-      )
+    switch defaultInput() {
+    case .unreadable:
       return
+    case .absent:
+      guard let previous = current else { return }
+      current = nil
+      previous.close()
+      logger.warning(
+        "capture microphone lost error.type=no_input_device app.error.origin=system microphone.uid=\(String(reflecting: previous.device.uid), privacy: .public)"
+      )
+    case .device(let next):
+      guard next.id != current?.device.id else { return }
+      switchMicrophone(to: next, from: current?.device)
     }
-    switchMicrophone(to: next, from: previous?.device)
   }
 
   private func switchMicrophone(to next: AudioDevice, from previousDevice: AudioDevice?) {
