@@ -170,7 +170,6 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
       },
       defaultInput: readDefaultInput)
     try watchDefaultInput(pipe) { follower.follow() }
-    // 開始に失敗したときにも、先に届いた通知の照合でマイクを開かないよう、開く前に積む。
     pipe.teardown.add { follower.stop() }
     microphone = try follower.start()
   case .device(let uid, let name):

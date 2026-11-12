@@ -33,12 +33,16 @@ final class DefaultInputFollower: @unchecked Sendable {
   }
 
   /// 今の既定の入力を読み始める。既定が無ければ `.noInputDevice` を投げる。
+  /// `start` より前に `follow` が届いていてもよい。その照合が開いたマイクは `start` が閉じる。
+  /// `start` が投げたときも、開いていたマイクは `stop` で閉じる。
   func start() throws(StartFailure) -> (device: AudioDevice, format: AVAudioFormat) {
     try queue.sync {
       Result { () throws(StartFailure) in
         guard let device = defaultInput() else { throw .noInputDevice }
         let opened = try open(device) { [self] in lost(device) }
+        let previous = current
         current = (device, opened.close)
+        previous?.close()
         return (device, opened.format)
       }
     }.get()

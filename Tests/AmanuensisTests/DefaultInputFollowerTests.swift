@@ -141,3 +141,32 @@ private final class FakeMicrophones: Sendable {
   #expect(throws: StartFailure.noInputDevice) { try follower.start() }
   #expect(microphones.events.isEmpty)
 }
+
+@Test func followBeforeStartLeavesNoMicrophoneOpenAfterStop() throws {
+  let microphones = FakeMicrophones(defaults: [desk, headset])
+  let follower = microphones.follower()
+
+  follower.follow()
+  let started = try follower.start()
+  follower.stop()
+
+  #expect(started.device == headset, "開始時は既定の入力を読む")
+  #expect(
+    microphones.events == [.open(desk.id), .open(headset.id), .close(desk.id), .close(headset.id)],
+    "開始より先に届いた照合が開いたマイクも、開始で閉じる")
+}
+
+@Test func failedStartAfterFollowStillClosesOnStop() {
+  let microphones = FakeMicrophones(defaults: [desk, headset], failing: [headset.id])
+  let follower = microphones.follower()
+
+  follower.follow()
+  #expect(throws: StartFailure.failed(step: "start_device", type: "-50")) {
+    try follower.start()
+  }
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .open(headset.id), .close(desk.id)],
+    "開始に失敗しても、先に届いた照合が開いたマイクは停止で閉じる")
+}
