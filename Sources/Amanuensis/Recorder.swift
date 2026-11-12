@@ -122,7 +122,7 @@ enum RecorderState: Equatable {
       refuse(problem)
       return
     }
-    logger.info(
+    logger.notice(
       "recording started trigger=\(trigger.logName, privacy: .public) folder.name=\(meeting.lastPathComponent, privacy: .public)"
     )
     state = .recording(
@@ -131,16 +131,20 @@ enum RecorderState: Equatable {
         activity: activity))
   }
 
-  /// 録音中のときだけ取り込みを止めてファイルを閉じる。
-  func stop() async {
+  /// 録音中のときだけ取り込みを止めてファイルを閉じる。`reason` はログに残す。
+  func stop(reason: StopReason) async {
     guard case .recording(let recording) = state else { return }
-    if await finish(recording) == nil { report(.saveFailed) } else { saved(recording.folder) }
+    if await finish(recording, reason: reason) == nil {
+      report(.saveFailed)
+    } else {
+      saved(recording.folder)
+    }
   }
 
   /// 録音中のときだけ取り込みを止め、会議フォルダーを消す。
   func discard() async {
     guard case .recording(let recording) = state else { return }
-    _ = await finish(recording)
+    _ = await finish(recording, reason: .discarded)
     do {
       try FileManager.default.removeItem(at: recording.folder)
     } catch {
@@ -150,12 +154,12 @@ enum RecorderState: Equatable {
       report(.discardFailed)
       return
     }
-    logger.info(
+    logger.notice(
       "recording discarded folder.name=\(recording.folder.lastPathComponent, privacy: .public)")
   }
 
   /// 取り込みを止めて待機中に戻す。閉じたファイルの秒数を返し、止められなければ nil を返す。
-  private func finish(_ recording: Recording) async -> TimeInterval? {
+  private func finish(_ recording: Recording, reason: StopReason) async -> TimeInterval? {
     state = .finishing
     defer {
       ProcessInfo.processInfo.endActivity(recording.activity)
@@ -163,8 +167,8 @@ enum RecorderState: Equatable {
     }
     do {
       let duration = try await recording.session.stop()
-      logger.info(
-        "recording stopped duration_s=\(duration, format: .fixed(precision: 1), privacy: .public) folder.name=\(recording.folder.lastPathComponent, privacy: .public)"
+      logger.notice(
+        "recording stopped reason=\(reason.logName, privacy: .public) duration_s=\(duration, format: .fixed(precision: 1), privacy: .public) folder.name=\(recording.folder.lastPathComponent, privacy: .public)"
       )
       return duration
     } catch {
@@ -238,6 +242,20 @@ enum RecorderState: Equatable {
 }
 
 private struct StartTimeout: Error {}
+
+/// 録音を止めた理由。
+enum StopReason {
+  case manual, meetingEnded, appQuit, discarded
+
+  fileprivate var logName: String {
+    switch self {
+    case .manual: "manual"
+    case .meetingEnded: "meeting_ended"
+    case .appQuit: "app_quit"
+    case .discarded: "discarded"
+    }
+  }
+}
 
 extension Permission {
   var logName: String {

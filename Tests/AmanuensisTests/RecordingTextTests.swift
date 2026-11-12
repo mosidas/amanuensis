@@ -169,7 +169,7 @@ func startFailureTextIsNeverEmpty(step: String, type: String) {
     return
   }
   try body(recorder.state, recording.startedAt)
-  await recorder.stop()
+  await recorder.stop(reason: .manual)
 }
 
 /// 文言の表のメニューの 1 行。`elapsed` は録音中のときの開始からの秒数。

@@ -177,17 +177,17 @@ enum MeetingText {
       processes: processes, recorder: recorder.state.activity, autoRecord: autoRecord, now: now)
     switch (before, detector.meeting) {
     case (nil, let meeting?):
-      logger.info(
+      logger.notice(
         "meeting detected app=\(meeting.app.logName, privacy: .public) auto_record=\(autoRecord, privacy: .public)"
       )
     case (let meeting?, nil):
-      logger.info("meeting ended app=\(meeting.app.logName, privacy: .public)")
+      logger.notice("meeting ended app=\(meeting.app.logName, privacy: .public)")
     default: break
     }
     for command in commands {
       switch command {
       case .startRecording(let app):
-        logger.info("meeting recording requested app=\(app.logName, privacy: .public)")
+        logger.notice("meeting recording requested app=\(app.logName, privacy: .public)")
         await recorder.start(trigger: .meeting)
         if case .recording = recorder.state {
           let text = MeetingText.started(app)
@@ -197,7 +197,7 @@ enum MeetingText {
         let text = MeetingText.detected(app)
         notify(text.title, text.body)
       case .stopRecording:
-        await recorder.stop()
+        await recorder.stop(reason: .meetingEnded)
       }
     }
   }

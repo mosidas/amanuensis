@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Task {
       // 準備中と保存中は、録音中か待機中になるまで待つ。
       while recorder.state != .idle {
-        await recorder.stop()
+        await recorder.stop(reason: .appQuit)
         if recorder.state != .idle { try? await Task.sleep(for: .milliseconds(100)) }
       }
       sender.reply(toApplicationShouldTerminate: true)
