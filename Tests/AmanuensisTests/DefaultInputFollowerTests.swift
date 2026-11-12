@@ -86,8 +86,36 @@ private final class FakeMicrophones: Sendable {
   follower.stop()
 
   #expect(
-    microphones.events == [.open(desk.id), .open(headset.id), .close(desk.id), .close(headset.id)],
-    "読んでいたマイクを失ったら今の既定へ替える")
+    microphones.events == [.open(desk.id), .close(desk.id), .open(headset.id), .close(headset.id)],
+    "読んでいたマイクを失ったら閉じてから今の既定を開く")
+}
+
+@Test func lostDeviceStaysClosedWhileStillDefault() throws {
+  let microphones = FakeMicrophones(defaults: [desk, desk, headset])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  microphones.lose(desk)
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .close(desk.id), .open(headset.id), .close(headset.id)],
+    "失ったマイクが既定のままの間は閉じたまま開かず、既定が替わったら新しい既定を開く")
+}
+
+@Test func lostDeviceIsReopenedWhenFollowFindsItStillDefault() throws {
+  let microphones = FakeMicrophones(defaults: [desk])
+  let follower = microphones.follower()
+
+  _ = try follower.start()
+  microphones.lose(desk)
+  follower.follow()
+  follower.stop()
+
+  #expect(
+    microphones.events == [.open(desk.id), .close(desk.id), .open(desk.id), .close(desk.id)],
+    "失ったマイクが既定のままなら、次の既定の変更の通知で開き直す")
 }
 
 @Test func failedSwitchKeepsCurrentDevice() throws {

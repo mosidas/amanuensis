@@ -11,6 +11,7 @@ struct OpenedMicrophone {
 
 /// 録音中にシステムの既定の入力を追い、読むマイクを替える。
 /// 照合は自分の queue の上だけで行い、writerQueue と ioQueue の上では Core Audio の作成・停止・取り外しをしない。
+/// 読んでいるマイクが無くなったら閉じる。既定の入力がまだそのマイクを指す間は開かず、次の `follow` の照合で開く。
 final class DefaultInputFollower: @unchecked Sendable {
   private let queue = DispatchQueue(label: "io.github.mosidas.amanuensis.capture.microphone")
   private let open:
@@ -66,11 +67,14 @@ final class DefaultInputFollower: @unchecked Sendable {
 
   private func lost(_ device: AudioDevice) {
     queue.async { [self] in
-      guard current?.device.id == device.id else { return }
+      guard let lostMicrophone = current, lostMicrophone.device.id == device.id else { return }
+      current = nil
+      lostMicrophone.close()
       logger.warning(
         "capture microphone lost error.type=device_not_alive app.error.origin=system microphone.uid=\(String(reflecting: device.uid), privacy: .public)"
       )
-      reconcile()
+      guard let next = defaultInput(), next.id != device.id else { return }
+      switchMicrophone(to: next, from: device)
     }
   }
 
@@ -88,6 +92,10 @@ final class DefaultInputFollower: @unchecked Sendable {
       )
       return
     }
+    switchMicrophone(to: next, from: previous?.device)
+  }
+
+  private func switchMicrophone(to next: AudioDevice, from previousDevice: AudioDevice?) {
     let opened: OpenedMicrophone
     do throws(StartFailure) {
       opened = try open(next) { [self] in lost(next) }
@@ -97,11 +105,12 @@ final class DefaultInputFollower: @unchecked Sendable {
       )
       return
     }
+    let previous = current
     current = (next, opened.close)
     // shortcut: 開いてから閉じるので切り替えの直後に 1〜2 バッファーが重なりうる, 重なりで声が乱れる報告があれば閉じてから開く
     previous?.close()
     logger.notice(
-      "capture microphone switched microphone.uid=\(String(reflecting: next.uid), privacy: .public) microphone.name=\(String(reflecting: next.name), privacy: .public) microphone=\(Int(opened.format.sampleRate), privacy: .public)/\(opened.format.channelCount, privacy: .public) previous.uid=\(previous.map { String(reflecting: $0.device.uid) } ?? "none", privacy: .public)"
+      "capture microphone switched microphone.uid=\(String(reflecting: next.uid), privacy: .public) microphone.name=\(String(reflecting: next.name), privacy: .public) microphone=\(Int(opened.format.sampleRate), privacy: .public)/\(opened.format.channelCount, privacy: .public) previous.uid=\(previousDevice.map { String(reflecting: $0.uid) } ?? "none", privacy: .public)"
     )
   }
 }
