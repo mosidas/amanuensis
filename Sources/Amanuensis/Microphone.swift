@@ -61,12 +61,12 @@ func inputDevices(from all: [AudioDevice]) -> [AudioDevice] {
 
 /// 保存した UID のデバイス。`inputs` に無ければ `.selectedMicrophoneMissing` を投げる。
 func selectedMicrophone(uid: String, name: String, in inputs: [AudioDevice]) throws(StartFailure)
-  -> AudioObjectID
+  -> AudioDevice
 {
   guard let device = inputs.first(where: { $0.uid == uid }) else {
     throw .selectedMicrophoneMissing(name: name)
   }
-  return device.id
+  return device
 }
 
 /// Core Audio のデバイスの一覧。UID を読めないデバイスは除く。一覧を読めなければログに残して空を返す。
@@ -79,18 +79,32 @@ nonisolated func readAudioDevices() -> [AudioDevice] {
       "microphones read failed error.type=\(status, privacy: .public) app.error.origin=system")
     return []
   }
-  return ids.compactMap { id in
-    var uid: Unmanaged<CFString>?
-    guard read(id, kAudioDevicePropertyDeviceUID, into: &uid) == noErr,
-      let uid = uid?.takeRetainedValue() as String?
-    else { return nil }
-    var streams: [AudioStreamID] = []
-    let hasInput =
-      readList(
-        id, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput, into: &streams)
-      == noErr && !streams.isEmpty
-    return AudioDevice(id: id, uid: uid, name: deviceName(id) ?? uid, hasInput: hasInput)
-  }
+  return ids.compactMap(audioDevice)
+}
+
+/// Core Audio のデバイス 1 つの UID・名前・入力の有無。UID を読めなければ nil。
+nonisolated func audioDevice(_ id: AudioObjectID) -> AudioDevice? {
+  var uid: Unmanaged<CFString>?
+  guard read(id, kAudioDevicePropertyDeviceUID, into: &uid) == noErr,
+    let uid = uid?.takeRetainedValue() as String?
+  else { return nil }
+  var streams: [AudioStreamID] = []
+  let hasInput =
+    readList(
+      id, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput, into: &streams)
+    == noErr && !streams.isEmpty
+  return AudioDevice(id: id, uid: uid, name: deviceName(id) ?? uid, hasInput: hasInput)
+}
+
+/// システムの既定の入力デバイス。既定が無いか読めなければ nil。
+nonisolated func readDefaultInput() -> AudioDevice? {
+  var id = AudioObjectID(kAudioObjectUnknown)
+  guard
+    read(
+      AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, into: &id)
+      == noErr, id != kAudioObjectUnknown
+  else { return nil }
+  return audioDevice(id)
 }
 
 nonisolated func readInputDevices() -> [AudioDevice] { inputDevices(from: readAudioDevices()) }

@@ -130,9 +130,10 @@ nonisolated private func openCapture(
 ) async throws -> CaptureSession {
   let begin = ContinuousClock.now
   let pipe = CapturePipe(writer: try StereoRecordingWriter(url: file), onInterrupt: onInterrupt)
-  let formats: (microphone: AVAudioFormat, systemAudio: AVAudioFormat)
+  let prepared:
+    (microphone: AudioDevice, microphoneFormat: AVAudioFormat, systemAudio: AVAudioFormat)
   do throws(StartFailure) {
-    formats = try prepare(pipe, microphone: microphone)
+    prepared = try prepare(pipe, microphone: microphone)
   } catch {
     logger.error(
       "capture failed step=\(error.step, privacy: .public) error.type=\(error.type, privacy: .public) app.error.origin=system"
@@ -141,8 +142,8 @@ nonisolated private func openCapture(
     throw RecordingProblem.captureFailed(error)
   }
   let startMilliseconds = Int((ContinuousClock.now - begin) / .milliseconds(1))
-  logger.info(
-    "capture started microphone=\(Int(formats.microphone.sampleRate), privacy: .public)/\(formats.microphone.channelCount, privacy: .public) system_audio=\(Int(formats.systemAudio.sampleRate), privacy: .public)/\(formats.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public) microphone.choice=\(microphone == .systemDefault ? "default" : "device", privacy: .public)"
+  logger.notice(
+    "capture started microphone=\(Int(prepared.microphoneFormat.sampleRate), privacy: .public)/\(prepared.microphoneFormat.channelCount, privacy: .public) system_audio=\(Int(prepared.systemAudio.sampleRate), privacy: .public)/\(prepared.systemAudio.channelCount, privacy: .public) start_ms=\(startMilliseconds, privacy: .public) microphone.choice=\(microphone == .systemDefault ? "default" : "device", privacy: .public) microphone.uid=\(prepared.microphone.uid, privacy: .public) microphone.name=\(String(reflecting: prepared.microphone.name), privacy: .public)"
   )
   return CaptureSession {
     pipe.markStopping()
@@ -153,25 +154,22 @@ nonisolated private func openCapture(
   }
 }
 
-/// tap・集約デバイス・IOProc・リスナーを作って取り込みを始め、2 つの音源の形式を返す。
+/// tap・集約デバイス・IOProc・リスナーを作って取り込みを始め、読んでいるマイクと 2 つの音源の形式を返す。
 /// 作ったものを壊す手順は `pipe.teardown` に積む。
 nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: MicrophoneChoice)
-  throws(StartFailure) -> (microphone: AVAudioFormat, systemAudio: AVAudioFormat)
+  throws(StartFailure)
+  -> (microphone: AudioDevice, microphoneFormat: AVAudioFormat, systemAudio: AVAudioFormat)
 {
   let system = AudioObjectID(kAudioObjectSystemObject)
-  let microphone: AudioObjectID
+  let microphone: AudioDevice
   switch choice {
   case .systemDefault:
-    var defaultInput = AudioObjectID(kAudioObjectUnknown)
-    try check(
-      read(system, kAudioHardwarePropertyDefaultInputDevice, into: &defaultInput),
-      "find_microphone")
-    guard defaultInput != kAudioObjectUnknown else { throw .noInputDevice }
+    guard let defaultInput = readDefaultInput() else { throw .noInputDevice }
     microphone = defaultInput
   case .device(let uid, let name):
     microphone = try selectedMicrophone(uid: uid, name: name, in: readInputDevices())
   }
-  let microphoneFormat = try inputFormat(of: microphone)
+  let microphoneFormat = try inputFormat(of: microphone.id)
 
   var ownProcess = AudioObjectID(kAudioObjectUnknown)
   let translated = read(
@@ -211,7 +209,7 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
 
   let devices = [
     (aggregate, RecordingSource.systemAudio, systemFormat),
-    (microphone, RecordingSource.microphone, microphoneFormat),
+    (microphone.id, RecordingSource.microphone, microphoneFormat),
   ]
   var procs: [AudioDeviceIOProcID] = []
   for (device, source, format) in devices {
@@ -242,7 +240,7 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
         "destroy")
     }
   }
-  return (microphoneFormat, systemFormat)
+  return (microphone, microphoneFormat, systemFormat)
 }
 
 /// 入力デバイスの先頭の入力ストリームの形式。IOProc はこの形式でバッファーを渡す。
@@ -414,7 +412,7 @@ private final class CapturePipe: @unchecked Sendable {
     try await withCheckedThrowingContinuation { continuation in
       writerQueue.async { [self] in
         let result = Result { try writer.finish() }
-        logger.info(
+        logger.notice(
           "capture stopped duration_s=\((try? result.get()) ?? 0, format: .fixed(precision: 1), privacy: .public) dropped_frames=\(self.writer.droppedFrames, privacy: .public) invalid_buffers=\(self.invalidBuffers, privacy: .public) system_audio_heard=\(self.heardSystemAudio, privacy: .public)"
         )
         continuation.resume(with: result)

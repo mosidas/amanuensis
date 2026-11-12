@@ -425,7 +425,7 @@ private struct RecordingNotStarted: Error {
     guard case .recording(let recording) = recorder.state else {
       throw RecordingNotStarted(state: "\(recorder.state)")
     }
-    await recorder.stop()
+    await recorder.stop(reason: .manual)
     #expect(transcriber.current == recording.folder, "停止すると文字起こしが始まる")
     try await waitUntil { transcriber.current == nil }
 

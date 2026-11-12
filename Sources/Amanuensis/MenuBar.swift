@@ -194,7 +194,7 @@ final class MenuBar: NSObject {
   }
 
   @objc private func stop(_ sender: NSMenuItem) {
-    Task { await recorder.stop() }
+    Task { await recorder.stop(reason: .manual) }
   }
 
   @objc private func discard(_ sender: NSMenuItem) {
