@@ -170,3 +170,15 @@ private final class FakeMicrophones: Sendable {
     microphones.events == [.open(desk.id), .open(headset.id), .close(desk.id)],
     "開始に失敗しても、先に届いた照合が開いたマイクは停止で閉じる")
 }
+
+@Test func startAfterStopThrowsWithoutOpening() {
+  let microphones = FakeMicrophones(defaults: [desk])
+  let follower = microphones.follower()
+
+  follower.stop()
+  #expect(throws: StartFailure.failed(step: "find_microphone", type: "stopped")) {
+    try follower.start()
+  }
+
+  #expect(microphones.events.isEmpty, "停止の後の開始ではマイクを開かない")
+}
