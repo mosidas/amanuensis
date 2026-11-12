@@ -162,6 +162,7 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
 {
   let system = AudioObjectID(kAudioObjectSystemObject)
   let microphone: (device: AudioDevice, format: AVAudioFormat)
+  let closeMicrophone: @Sendable () -> Void
   switch choice {
   case .systemDefault:
     let follower = DefaultInputFollower(
@@ -170,12 +171,14 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
       },
       defaultInput: readDefaultInput)
     try watchDefaultInput(pipe) { follower.follow() }
-    pipe.teardown.add { follower.stop() }
+    closeMicrophone = { follower.stop() }
+    pipe.teardown.add(closeMicrophone)
     microphone = try follower.start()
   case .device(let uid, let name):
     let device = try selectedMicrophone(uid: uid, name: name, in: readInputDevices())
     let opened = try openMicrophone(device, pipe) { pipe.interrupt(source: .microphone) }
-    pipe.teardown.add(opened.close)
+    closeMicrophone = opened.close
+    pipe.teardown.add(closeMicrophone)
     microphone = (device, opened.format)
   }
 
@@ -218,6 +221,8 @@ nonisolated private func prepare(_ pipe: CapturePipe, microphone choice: Microph
   try startReading(aggregate, as: .systemAudio, format: systemFormat, pipe, into: pipe.teardown) {
     pipe.interrupt(source: .systemAudio)
   }
+  // 片付けは逆順に動くため、もう一度積んでマイクをシステム音声より先に止め、末尾にマイクだけの区間を書かない。2 回目の呼び出しは何もしない。
+  pipe.teardown.add(closeMicrophone)
   return (microphone.device, microphone.format, systemFormat)
 }
 
