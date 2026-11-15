@@ -253,9 +253,9 @@ nonisolated private func startReading(
       &proc, device, pipe.ioQueue, pipe.ioBlock(for: source, format: format)),
     "create_ioproc")
   guard let proc else { throw .failed(step: "create_ioproc", type: "no_ioproc") }
-  teardown.add { stopCheck(AudioDeviceDestroyIOProcID(device, proc), "destroy") }
+  teardown.add { stopCheck(AudioDeviceDestroyIOProcID(device, proc), "destroy", device: device) }
   try check(AudioDeviceStart(device, proc), "start_device")
-  teardown.add { stopCheck(AudioDeviceStop(device, proc), "stop_device") }
+  teardown.add { stopCheck(AudioDeviceStop(device, proc), "stop_device", device: device) }
   var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
   // AudioObjectRemovePropertyListenerBlock は付けたときと同じ block を求める(AudioHardware.h)。
   let listener = pipe.aliveListener(for: device, onLost: onLost)
@@ -266,7 +266,7 @@ nonisolated private func startReading(
     var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
     stopCheck(
       AudioObjectRemovePropertyListenerBlock(device, &address, pipe.writerQueue, listener),
-      "destroy")
+      "destroy", device: device)
   }
 }
 
@@ -306,6 +306,12 @@ nonisolated private func inputFormat(of device: AudioObjectID) throws(StartFailu
     throw .unsupportedInput(name: deviceName(device), channels: Int(description.mChannelsPerFrame))
   }
   return format
+}
+
+/// 読めなければ消えたとみなす。
+nonisolated func deviceIsAlive(_ device: AudioObjectID) -> Bool {
+  var alive: UInt32 = 1
+  return read(device, kAudioDevicePropertyDeviceIsAlive, into: &alive) == noErr && alive != 0
 }
 
 /// デバイスの表示名。読めなければ nil。
@@ -372,8 +378,15 @@ func readList(
 }
 
 /// 片付けの失敗はログに残し、残りの片付けを続ける。
-private func stopCheck(_ status: OSStatus, _ step: StaticString) {
+/// `device` が消えていれば、失敗は消えた結果なので error にせず notice で残す。
+func stopCheck(_ status: OSStatus, _ step: StaticString, device: AudioObjectID? = nil) {
   guard status != noErr else { return }
+  if let device, !deviceIsAlive(device) {
+    logger.notice(
+      "capture lost device stop failed step=\(step, privacy: .public) error.type=\(status, privacy: .public)"
+    )
+    return
+  }
   logger.error(
     "capture stop failed step=\(step, privacy: .public) error.type=\(status, privacy: .public) app.error.origin=system"
   )
@@ -436,10 +449,7 @@ private final class CapturePipe: @unchecked Sendable {
     for device: AudioObjectID, onLost: @escaping @Sendable () -> Void
   ) -> @Sendable @convention(block) (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void {
     { [self] _, _ in
-      var alive: UInt32 = 1
-      guard read(device, kAudioDevicePropertyDeviceIsAlive, into: &alive) != noErr || alive == 0,
-        !ended
-      else { return }
+      guard !deviceIsAlive(device), !ended else { return }
       onLost()
     }
   }
