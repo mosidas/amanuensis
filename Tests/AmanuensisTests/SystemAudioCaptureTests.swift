@@ -1,4 +1,6 @@
 import AVFoundation
+import CoreAudio
+import OSLog
 import Testing
 
 @testable import Amanuensis
@@ -177,4 +179,106 @@ func upToTwoChannelsKeepPlainFormat(channels: UInt32, planar: Bool) throws {
   let right = UnsafeBufferPointer(start: read.floatChannelData![1], count: Int(read.frameLength))
   #expect(right.count == 48_000)
   #expect(right.allSatisfy { abs($0 - 0.25) < 0.001 })
+}
+
+@Suite(.serialized) struct StopFailureLogTests {
+  /// アプリの集約デバイスの接頭辞は付けない。
+  private func makeAggregateDevice() throws -> AudioObjectID {
+    let description: [String: Any] = [
+      kAudioAggregateDeviceNameKey: "amanuensis-tests",
+      kAudioAggregateDeviceUIDKey: "io.github.mosidas.amanuensis.tests." + UUID().uuidString,
+      kAudioAggregateDeviceIsPrivateKey: true,
+    ]
+    var device = AudioObjectID(kAudioObjectUnknown)
+    try #require(AudioHardwareCreateAggregateDevice(description as CFDictionary, &device) == noErr)
+    return device
+  }
+
+  private func currentThread() -> UInt64 {
+    var thread: UInt64 = 0
+    pthread_threadid_np(nil, &thread)
+    return thread
+  }
+
+  private let marks = Logger(subsystem: "io.github.mosidas.amanuensis.tests", category: "mark")
+
+  private func mark() -> String {
+    let mark = UUID().uuidString
+    marks.notice("\(mark, privacy: .public)")
+    return mark
+  }
+
+  /// `mark` より後に `thread` が出した capture のログ。並行する他のスイートのログを混ぜないためスレッドで絞る。
+  // position(date:) は指定より前の項目も返し、項目の時刻は Date.now より 1 ms ほど前に出る(実測)ため、時刻でなく印で区切る。
+  private func captureLogs(after mark: String, thread: UInt64) throws -> [OSLogEntryLog] {
+    let entries = try OSLogStore(scope: .currentProcessIdentifier).getEntries(
+      matching: NSPredicate(format: "subsystem BEGINSWITH %@", "io.github.mosidas.amanuensis")
+    )
+    .compactMap { $0 as? OSLogEntryLog }
+    .filter { $0.threadIdentifier == thread }
+    let marked = try #require(entries.lastIndex { $0.composedMessage == mark }, "印のログを読める")
+    return entries[(marked + 1)...].filter {
+      $0.subsystem == "io.github.mosidas.amanuensis" && $0.category == "capture"
+    }
+  }
+
+  private func messages(_ entries: some Sequence<OSLogEntryLog>, at level: OSLogEntryLog.Level)
+    -> [String]
+  {
+    entries.filter { $0.level == level }.map(\.composedMessage)
+  }
+
+  @Test func closingVanishedDeviceIsNotLoggedAsError() throws {
+    let thread = currentThread()
+    let device = try makeAggregateDevice()
+    let queue = DispatchQueue(label: "io.github.mosidas.amanuensis.tests.stop-failure")
+    var proc: AudioDeviceIOProcID?
+    try #require(
+      AudioDeviceCreateIOProcIDWithBlock(&proc, device, queue) { _, _, _, _, _ in } == noErr)
+    let ioProc = try #require(proc)
+    var address = propertyAddress(kAudioDevicePropertyDeviceIsAlive)
+    let listener: AudioObjectPropertyListenerBlock = { _, _ in }
+    try #require(AudioObjectAddPropertyListenerBlock(device, &address, queue, listener) == noErr)
+    try #require(AudioHardwareDestroyAggregateDevice(device) == noErr)
+    func gone() -> Bool {
+      var alive: UInt32 = 1
+      return read(device, kAudioDevicePropertyDeviceIsAlive, into: &alive) != noErr || alive == 0
+    }
+    let deadline = Date.now + 2
+    while !gone(), Date.now < deadline { Thread.sleep(forTimeInterval: 0.01) }
+    try #require(gone(), "集約デバイスを壊したら 2 秒以内に消える")
+
+    let marked = mark()
+    let removed = AudioObjectRemovePropertyListenerBlock(device, &address, queue, listener)
+    stopCheck(removed, "destroy", device: device)
+    let stopped = AudioDeviceStop(device, ioProc)
+    stopCheck(stopped, "stop_device", device: device)
+    let destroyed = AudioDeviceDestroyIOProcID(device, ioProc)
+    stopCheck(destroyed, "destroy", device: device)
+
+    let entries = try captureLogs(after: marked, thread: thread)
+    #expect(messages(entries, at: .error) == [], "消えたデバイスを閉じる失敗は error にしない")
+    #expect(
+      messages(entries, at: .notice) == [
+        "capture lost device stop failed step=destroy error.type=\(removed)",
+        "capture lost device stop failed step=stop_device error.type=\(stopped)",
+        "capture lost device stop failed step=destroy error.type=\(destroyed)",
+      ])
+  }
+
+  @Test func closingLiveDeviceFailureIsLoggedAsError() throws {
+    let thread = currentThread()
+    let device = try makeAggregateDevice()
+    defer { _ = AudioHardwareDestroyAggregateDevice(device) }
+
+    let marked = mark()
+    stopCheck(kAudioHardwareIllegalOperationError, "stop_device", device: device)
+
+    let entries = try captureLogs(after: marked, thread: thread)
+    #expect(
+      messages(entries, at: .error) == [
+        "capture stop failed step=stop_device error.type=1852797029 app.error.origin=system"
+      ])
+    #expect(messages(entries, at: .notice) == [])
+  }
 }

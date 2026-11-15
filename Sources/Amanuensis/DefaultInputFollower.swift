@@ -76,7 +76,7 @@ final class DefaultInputFollower: @unchecked Sendable {
       guard let lostMicrophone = current, lostMicrophone.device.id == device.id else { return }
       current = nil
       lostMicrophone.close()
-      logger.warning(
+      logger.notice(
         "capture microphone lost error.type=device_not_alive app.error.origin=system microphone.uid=\(String(reflecting: device.uid), privacy: .public)"
       )
       guard case .device(let next) = defaultInput(), next.id != device.id else { return }
@@ -94,7 +94,7 @@ final class DefaultInputFollower: @unchecked Sendable {
       guard let previous = current else { return }
       current = nil
       previous.close()
-      logger.warning(
+      logger.notice(
         "capture microphone lost error.type=no_input_device app.error.origin=system microphone.uid=\(String(reflecting: previous.device.uid), privacy: .public)"
       )
     case .device(let next):
