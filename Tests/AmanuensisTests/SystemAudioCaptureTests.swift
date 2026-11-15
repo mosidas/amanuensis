@@ -182,7 +182,7 @@ func upToTwoChannelsKeepPlainFormat(channels: UInt32, planar: Bool) throws {
 }
 
 @Suite(.serialized) struct StopFailureLogTests {
-  /// 私有の集約デバイスを作る。アプリの集約デバイスの接頭辞は付けない。
+  /// アプリの集約デバイスの接頭辞は付けない。
   private func makeAggregateDevice() throws -> AudioObjectID {
     let description: [String: Any] = [
       kAudioAggregateDeviceNameKey: "amanuensis-tests",
@@ -202,7 +202,6 @@ func upToTwoChannelsKeepPlainFormat(channels: UInt32, planar: Bool) throws {
 
   private let marks = Logger(subsystem: "io.github.mosidas.amanuensis.tests", category: "mark")
 
-  /// 印のログを出して印を返す。
   private func mark() -> String {
     let mark = UUID().uuidString
     marks.notice("\(mark, privacy: .public)")
