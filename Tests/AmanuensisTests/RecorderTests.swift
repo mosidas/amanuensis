@@ -152,7 +152,7 @@ private func exists(_ url: URL) -> Bool {
     let recorder = try harness.recorder()
 
     await recorder.start()
-    await recorder.stop()
+    await recorder.stop(reason: .manual)
 
     #expect(harness.captureCalls == 1)
     #expect(harness.reports.isEmpty)
@@ -173,8 +173,8 @@ private func exists(_ url: URL) -> Bool {
 
     #expect(meetingRecorder.state.activity == .recording(.meeting))
     #expect(manualRecorder.state.activity == .recording(.manual), "メニューの開始は手動の録音になる")
-    await meetingRecorder.stop()
-    await manualRecorder.stop()
+    await meetingRecorder.stop(reason: .manual)
+    await manualRecorder.stop(reason: .manual)
   }
 
   @Test func refusesWhenFolderIsMissing() async throws {
@@ -204,7 +204,7 @@ private func exists(_ url: URL) -> Bool {
     #expect(exists(file))
     #expect(try recordingAssertions().count == 1, "録音中はスリープを抑止する")
 
-    await recorder.stop()
+    await recorder.stop(reason: .manual)
 
     #expect(recorder.state == .idle)
     #expect(harness.stopCalls == 1)
@@ -315,7 +315,7 @@ private func exists(_ url: URL) -> Bool {
     harness.releaseStart()
     await first.value
     if case .recording = recorder.state {} else { Issue.record("録音中になる: \(recorder.state)") }
-    await recorder.stop()
+    await recorder.stop(reason: .manual)
     #expect(harness.reports.isEmpty)
   }
 
@@ -343,7 +343,7 @@ private func exists(_ url: URL) -> Bool {
     let recorder = try harness.recorder()
     await recorder.start()
 
-    await recorder.stop()
+    await recorder.stop(reason: .manual)
 
     #expect(harness.reports == [.saveFailed])
     #expect(recorder.state == .idle)

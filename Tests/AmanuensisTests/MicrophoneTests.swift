@@ -82,7 +82,7 @@ func brokenMicrophoneValueFallsBackToSystemDefault(name: String, value: any Send
   }
   #expect(
     try selectedMicrophone(uid: "jump-uid", name: "Jump Desktop Microphone", in: [builtIn, jump])
-      == 12, "一覧にある UID ならそのデバイスを使う")
+      == jump, "一覧にある UID ならそのデバイスを使う")
 }
 
 /// 偽の Core Audio の一覧。通知の偽物と組で使う。

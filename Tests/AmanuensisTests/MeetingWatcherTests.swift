@@ -161,7 +161,7 @@ extension RecorderTests {
       }
 
       switch ending {
-      case .stop: await fixture.recorder.stop()
+      case .stop: await fixture.recorder.stop(reason: .manual)
       case .discard: await fixture.recorder.discard()
       }
       await fixture.tick(zoomInUse, at: 2)
