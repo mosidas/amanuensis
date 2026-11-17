@@ -31,11 +31,12 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
 
   func failed(
     _ failure: TranscriptionFailure, step: String, type: String, status: Int32? = nil,
-    stderr: String = ""
+    stderr: String = "", reason: String? = nil
   ) -> TranscriptionFailure {
     let status = status.map(String.init) ?? "none"
+    let reason = reason.map { " reason=\($0)" } ?? ""
     logger.error(
-      "transcription failed step=\(step, privacy: .public) error.type=\(type, privacy: .public) app.error.origin=system status=\(status, privacy: .public) engine=\(engine, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(stderr, privacy: .private)"
+      "transcription failed step=\(step, privacy: .public) error.type=\(type, privacy: .public)\(reason, privacy: .public) app.error.origin=system status=\(status, privacy: .public) engine=\(engine, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(stderr, privacy: .private)"
     )
     return failure
   }
@@ -84,7 +85,7 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
       appendLog(error.logLine, to: log)
       throw failed(
         .recognitionFailed, step: error.step, type: error.type, status: error.status,
-        stderr: error.stderr)
+        stderr: error.stderr, reason: error.reason?.rawValue)
     }
   }
 
@@ -133,6 +134,8 @@ private struct RecognitionFailure: Error {
   var status: Int32? = nil
   /// os のログに `privacy: .private` で出す標準エラー出力の末尾。
   var stderr = ""
+  /// os のログの `reason`。Whisper の出力を使えなかったときだけ付ける(`transcription.log` には出さない)。
+  var reason: WhisperOutputError? = nil
   /// `transcription.log` に追記する 1 行(標準エラー出力はホームを伏せる)。
   let logLine: String
 
@@ -148,9 +151,10 @@ private struct RecognitionFailure: Error {
   }
 
   /// 出力が想定の形でなかった。
-  init(unparsableOutputOf label: String) {
+  init(unparsableOutputOf label: String, reason: WhisperOutputError? = nil) {
     step = "parse"
     type = "unparsable_output"
+    self.reason = reason
     logLine = "\(label) failed error.type=unparsable_output"
   }
 }
@@ -191,11 +195,16 @@ private func recognize(
     } catch {
       throw RecognitionFailure(error, label: "whisper")
     }
+    let output: Data
     do {
-      return try whisperTokens(
-        Data(contentsOf: whole.appendingPathExtension("json")), duration: duration)
+      output = try Data(contentsOf: whole.appendingPathExtension("json"))
     } catch {
-      throw RecognitionFailure(unparsableOutputOf: "whisper")
+      throw RecognitionFailure(unparsableOutputOf: "whisper", reason: .missingJSON)
+    }
+    do {
+      return try whisperTokens(output, duration: duration)
+    } catch {
+      throw RecognitionFailure(unparsableOutputOf: "whisper", reason: error)
     }
   }
 }

@@ -756,9 +756,9 @@ func speakerLabelsFollowVoiceWithBundledModels() async throws {
     """#.utf8)
 
   #expect(
-    try whisperTokens(output, duration: 1.5) == [
+    try whisperTokens(output, duration: 2.5) == [
       token(1.0, 1.4, "こん"), token(1.0, 2.5, "にちは"), token(2.0, 2.5, "赤[31m"),
-    ], "末尾 2.5 秒は録音の長さ + 1 秒ちょうどで受け付ける")
+    ], "末尾 2.5 秒は録音の長さちょうどなのでそのまま")
 }
 
 /// `from`・`to`(ミリ秒)の語「あ」を 1 つ持つ whisper-cli の JSON。
@@ -770,21 +770,55 @@ private func whisperWord(from: Int, to: Int) -> Data {
 
 @Test(
   arguments: [
-    Data("not json".utf8),
-    Data(#"{"transcription":[{"offsets":{"from":0,"to":10},"tokens":[{"text":"x"#.utf8) + [0xFF]
-      + Data(#"","id":1000}]}]}"#.utf8),
-    Data(#"{"transcription":[{"offsets":{"from":0,"to":10},"text":""#.utf8) + [0xFF]
-      + Data(#"","tokens":[{"text":"x","id":1000}]}]}"#.utf8),
-    Data(#"{"result":{"language":"ja"}}"#.utf8),
-    whisperWord(from: 0, to: 11_001),
-    whisperWord(from: -1, to: 500),
-    whisperWord(from: 600, to: 500),
-    Data(
-      #"{"transcription":[{"offsets":{"from":0,"to":20000},"text":"あ","tokens":[{"text":"あ","id":1000}]}]}"#
-        .utf8),
-  ])
-func whisperTokensRejectUnexpectedOutput(output: Data) {
-  #expect(throws: (any Error).self) { try whisperTokens(output, duration: 10) }
+    (Data("not json".utf8), .undecodableJSON),
+    (
+      Data(#"{"transcription":[{"offsets":{"from":0,"to":10},"tokens":[{"text":"x"#.utf8) + [0xFF]
+        + Data(#"","id":1000}]}]}"#.utf8), .notUTF8
+    ),
+    (
+      Data(#"{"transcription":[{"offsets":{"from":0,"to":10},"text":""#.utf8) + [0xFF]
+        + Data(#"","tokens":[{"text":"x","id":1000}]}]}"#.utf8), .notUTF8
+    ),
+    (Data(#"{"result":{"language":"ja"}}"#.utf8), .undecodableJSON),
+    (whisperWord(from: 0, to: 40_001), .timeOutOfRange),
+    (whisperWord(from: -1, to: 500), .timeOutOfRange),
+    (whisperWord(from: 600, to: 500), .timeOutOfRange),
+    (
+      Data(
+        #"{"transcription":[{"offsets":{"from":0,"to":40001},"text":"あ","tokens":[{"text":"あ","id":1000}]}]}"#
+          .utf8), .timeOutOfRange
+    ),
+  ] as [(Data, WhisperOutputError)])
+func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputError) {
+  #expect(throws: reason) { try whisperTokens(output, duration: 10) }
+}
+
+@Test func whisperTokensClampTimesPastRecordingEndWithinLastWindow() throws {
+  // 実際の whisper-cli の出力の形: 最後の 30 秒の窓の無音に出た段落は、録音の長さを超えて窓の終わりまで伸びる。
+  let output = Data(
+    #"""
+    {"transcription":[{"offsets":{"from":8000,"to":37160},"text":"ご視聴ありがとうございました","tokens":[
+      {"text":"ご視聴","offsets":{"from":8000,"to":9500},"id":1000},
+      {"text":"ありがとう","offsets":{"from":9540,"to":37050},"id":1001},
+      {"text":"ございました","offsets":{"from":37050,"to":40000},"id":1002},
+      {"text":"[_TT_1499]","offsets":{"from":37160,"to":37160},"id":51864}]}]}
+    """#.utf8)
+
+  #expect(
+    try whisperTokens(output, duration: 10) == [
+      token(8.0, 9.5, "ご視聴"), token(9.54, 10.0, "ありがとう"), token(10.0, 10.0, "ございました"),
+    ], "録音の長さ + 30 秒ちょうどまで受け付け、時刻を録音の長さに収める")
+}
+
+@Test func whisperTokensKeepTextTokenIDsBelowEndOfText() throws {
+  let output = Data(
+    #"""
+    {"transcription":[{"offsets":{"from":0,"to":1000},"text":"残る","tokens":[
+      {"text":"残る","offsets":{"from":0,"to":500},"id":50256},
+      {"text":"<|endoftext|>","offsets":{"from":500,"to":1000},"id":50257}]}]}
+    """#.utf8)
+
+  #expect(try whisperTokens(output, duration: 1) == [token(0, 0.5, "残る")])
 }
 
 /// 引数を `whisper-args` に書き、`-f` の次の WAVE が無ければ 9 で終わる偽の whisper-cli の前置き。
@@ -989,5 +1023,52 @@ private let whisperE2EEnabled =
     let (_, sameVoice) = try await transcribeFixture(
       "transcription-3x.wav", separateSpeakers: true, installation: bundledWhisper)
     #expect(sameVoice.map(\.speaker) == [1, 1, 1], "同じ声の 3 回は同じ話者")
+  }
+
+  @Test(.enabled(if: whisperE2EEnabled))
+  func transcribeFixtureWithTrailingSilenceWithWhisper() async throws {
+    let reference = try String(contentsOf: sampleText, encoding: .utf8)
+
+    let paragraphs = try await transcribeWithTrailingSilence(
+      "transcription-3x.wav", seconds: 30, installation: bundledWhisper)
+
+    #expect(paragraphs.count >= 3, "末尾の無音に録音の長さを超える時刻の段落が付いても transcript.md を書く")
+    for (paragraph, start) in zip(paragraphs.prefix(3), [1.0, 26.6, 52.2]) {
+      let cer = characterErrorRate(paragraph.text, reference: reference)
+      print(
+        "cer whisper transcription-3x.wav+30s [\(paragraph.seconds)] \(String(format: "%.4f", cer))"
+      )
+      #expect(cer <= selfCheckMaxCER, "段落 \(paragraph.seconds) 秒の CER \(cer)")
+      #expect(paragraph.text.hasPrefix("これは"), "段落 \(paragraph.seconds) 秒が回の冒頭で始まる")
+      #expect(
+        abs(Double(paragraph.seconds) - start) <= 2,
+        "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
+    }
+  }
+}
+
+/// フィクスチャの後に `seconds` 秒の無音を足して右チャンネルに置いた録音を文字起こしし、段落の時刻(秒)と本文を返す。
+private func transcribeWithTrailingSilence(
+  _ name: String, seconds silence: Double, installation: SpeechInstallation
+) async throws -> [(seconds: Int, text: String)] {
+  let (values, rate, _) = try samples(of: fixtures.appending(path: name))
+  let meeting = try temporaryDirectory("2026-11-06_101500")
+  try writeStereoCAF(
+    to: meeting.appending(path: "recording.caf"), seconds: Double(values.count) / rate + silence
+  ) {
+    let index = Int(($0 * rate).rounded())
+    return index < values.count ? values[index] : 0
+  }
+
+  try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+
+  let transcript = try String(
+    contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
+  print("transcript \(name)+\(silence)s \(meeting.path)\n\(transcript)")
+  return transcript.split(separator: "\n").compactMap { line in
+    guard let match = String(line).wholeMatch(of: /\[(\d{2}):(\d{2}):(\d{2})\] (.+)/) else {
+      return nil
+    }
+    return (Int(match.1)! * 3600 + Int(match.2)! * 60 + Int(match.3)!, String(match.4))
   }
 }
