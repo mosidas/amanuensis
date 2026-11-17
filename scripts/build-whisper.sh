@@ -9,7 +9,8 @@ COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037
 # shortcut: 版の追跡は手作業, whisper.cpp の脆弱性の告知か不具合の報告があれば上げる
 
 out=.build/whisper-cpp
-stamp="$COMMIT $(shasum -a 256 < "$0" | cut -d' ' -f1)"
+sum=$(shasum -a 256 < scripts/build-whisper.sh)
+stamp="$COMMIT ${sum%% *}"
 if [ "$(cat "$out/STAMP" 2>/dev/null)" = "$stamp" ] && [ -x "$out/whisper-cli" ]; then
   echo "build-whisper.sh: version=$VERSION commit=$COMMIT はビルド済み"
   exit 0
@@ -22,7 +23,9 @@ fail() {
 
 echo "build-whisper.sh: version=$VERSION commit=$COMMIT をビルドする"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+mkdir -p .build
+stage=$(mktemp -d "$out.tmp.XXXXXX")
+trap 'rm -rf "$tmp" "$stage"' EXIT
 src=$tmp/whisper.cpp
 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$VERSION" \
   https://github.com/ggml-org/whisper.cpp.git "$src" ||
@@ -52,9 +55,6 @@ cmake --build "$tmp/build" --target whisper-cli -j "$(sysctl -n hw.ncpu)" ||
 built=$tmp/build/bin/whisper-cli
 [ -x "$built" ] || fail "ビルドした whisper-cli が $built に無い"
 
-mkdir -p .build
-stage=$(mktemp -d "$out.tmp.XXXXXX")
-trap 'rm -rf "$tmp" "$stage"' EXIT
 cp "$built" "$stage/whisper-cli"
 cp "$src/LICENSE" "$stage/LICENSE"
 echo "$stamp" > "$stage/STAMP"
