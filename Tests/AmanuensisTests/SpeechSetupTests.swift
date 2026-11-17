@@ -507,3 +507,279 @@ func realDownloadInstallsRuntimeAndModel() async {
   #expect(getxattr(installation.executable.path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
   #expect(errno == ENOATTR)
 }
+
+private let whisperModel = Data(repeating: 0x77, count: 400_000)
+
+/// `Harness` の取得先に偽の Whisper のモデルを足し、エンジンの設定を専用の UserDefaults の suite に持つ。
+/// `engine` が nil なら設定を書かない(保存値の無い既定)。
+@MainActor
+private struct WhisperHarness {
+  let harness = Harness()
+  let whisperURL = LocalFileURLProtocol.makeURL()
+  let suiteName = "SpeechSetupTests-\(UUID().uuidString)"
+  var setting: TranscriptionSetting {
+    TranscriptionSetting(defaults: UserDefaults(suiteName: suiteName)!)
+  }
+  var installation: SpeechInstallation {
+    var installation = harness.installation
+    installation.whisperModel = RemoteFile(
+      url: whisperURL, byteCount: Int64(whisperModel.count), sha256: whisperSHA256,
+      fileName: "whisper.bin")
+    return installation
+  }
+  private let whisperSHA256: String
+
+  init(
+    engine: TranscriptionEngine? = .whisper, whisperSHA256: String = sha256(whisperModel),
+    whisperStub: LocalFileURLProtocol.Stub = .init(body: whisperModel)
+  ) {
+    self.whisperSHA256 = whisperSHA256
+    LocalFileURLProtocol.set(whisperStub, for: whisperURL)
+    if let engine { setting.setEngine(engine) }
+  }
+
+  func makeSetup(
+    available: Int64 = 1 << 40,
+    selfCheck: @escaping (SpeechInstallation) async -> SelfCheckOutcome = { _ in .passed }
+  ) -> SpeechSetup {
+    SpeechSetup(
+      installation: installation, session: harness.session, availableCapacity: { _ in available },
+      selfCheck: selfCheck, setting: setting)
+  }
+
+  func requestCount(_ url: URL) -> Int { harness.requestCount(url) }
+
+  func remove() {
+    UserDefaults().removePersistentDomain(forName: suiteName)
+    try? FileManager.default.removeItem(at: harness.installation.directory)
+  }
+}
+
+@MainActor
+@Test func whisperDownloadsFourFilesOnceAndChecks() async throws {
+  let whisper = WhisperHarness()
+  defer { whisper.remove() }
+  let stub = StubCheck()
+  let setup = whisper.makeSetup(selfCheck: stub.run)
+  let history = StateHistory(setup)
+  #expect(setup.state == .notInstalled)
+
+  await setup.download()
+
+  let installation = whisper.installation
+  #expect(setup.state == .checked(.passed))
+  #expect(stub.calls == 1)
+  for url in [
+    whisper.harness.runtimeURL, whisper.harness.modelURL, whisper.whisperURL,
+    whisper.harness.diarizationURL,
+  ] {
+    #expect(whisper.requestCount(url) == 1, "\(url) を 1 回だけ要求する")
+  }
+  let firstProgress = history.states.first {
+    if case .downloading = $0 { true } else { false }
+  }
+  #expect(
+    firstProgress
+      == .downloading(
+        receivedBytes: 0,
+        totalBytes: Int64(runtime.count + model.count + whisperModel.count + diarizationModel.count)
+      ), "進み具合の全体に Whisper のモデルを含む")
+  #expect(try Data(contentsOf: installation.whisperModelFile) == whisperModel)
+  #expect(installation.hasWhisperModel)
+  #expect(
+    try FileManager.default.contentsOfDirectory(atPath: installation.directory.path).sorted()
+      == ["diarization.gguf", "model.gguf", "runtime", "whisper.bin"], ".part が残らない")
+}
+
+@MainActor
+@Test func whisperModelMissingDownloadsOnlyWhisper() async throws {
+  let whisper = WhisperHarness()
+  defer { whisper.remove() }
+  let installation = whisper.installation
+  await whisper.makeSetup().download()
+  try FileManager.default.removeItem(at: installation.whisperModelFile)
+  let stub = StubCheck()
+  let setup = whisper.makeSetup(selfCheck: stub.run)
+
+  #expect(setup.state == .whisperModelMissing(downloadBytes: Int64(whisperModel.count)))
+  #expect(!setup.installation.isInstalled, "Whisper を選んでいれば Whisper のモデルが要る")
+  #expect(installation.selecting(.haas).isInstalled, "Haas なら今のファイルで足りる")
+
+  await setup.download()
+
+  #expect(setup.state == .checked(.passed))
+  #expect(stub.calls == 1)
+  #expect(whisper.requestCount(whisper.whisperURL) == 2)
+  #expect(whisper.requestCount(whisper.harness.runtimeURL) == 1, "ランタイムを取り直さない")
+  #expect(whisper.requestCount(whisper.harness.modelURL) == 1, "Haas を取り直さない")
+  #expect(whisper.requestCount(whisper.harness.diarizationURL) == 1, "話者分離のモデルを取り直さない")
+}
+
+@MainActor
+@Test func whisperModelMissingCountsDiarizationModelWhenAbsent() async throws {
+  let whisper = WhisperHarness()
+  defer { whisper.remove() }
+  let installation = whisper.installation
+  await whisper.makeSetup().download()
+  try FileManager.default.removeItem(at: installation.whisperModelFile)
+  try FileManager.default.removeItem(at: installation.diarizationModelFile)
+
+  let setup = whisper.makeSetup()
+
+  #expect(
+    setup.state
+      == .whisperModelMissing(downloadBytes: Int64(whisperModel.count + diarizationModel.count)))
+}
+
+@MainActor
+@Test func whisperRefusesWithoutSendingRequestsWhenSpaceIsInsufficient() async {
+  let whisper = WhisperHarness()
+  defer { whisper.remove() }
+  let setup = whisper.makeSetup(available: 1000)
+
+  await setup.download()
+
+  let installation = whisper.installation
+  #expect(
+    setup.state
+      == .insufficientSpace(
+        required: installation.runtime.byteCount + installation.runtimeExtractedByteCount
+          + installation.model.byteCount + Int64(whisperModel.count)
+          + installation.diarizationModel.byteCount,
+        available: 1000))
+  for url in [
+    whisper.harness.runtimeURL, whisper.harness.modelURL, whisper.whisperURL,
+    whisper.harness.diarizationURL,
+  ] {
+    #expect(whisper.requestCount(url) == 0, "要求を送らない")
+  }
+}
+
+@MainActor
+@Test func whisperChecksumMismatchKeepsNoFile() async {
+  let whisper = WhisperHarness(whisperSHA256: String(repeating: "0", count: 64))
+  defer { whisper.remove() }
+  let setup = whisper.makeSetup()
+
+  await setup.download()
+
+  let installation = whisper.installation
+  #expect(setup.state == .failed(.checksumMismatch))
+  #expect(!installation.hasWhisperModel)
+  #expect(!FileManager.default.fileExists(atPath: installation.whisperModelFile.path + ".part"))
+}
+
+@MainActor
+@Test func selectingEngineRederivesState() async throws {
+  let whisper = WhisperHarness(engine: .haas)
+  defer { whisper.remove() }
+  let stub = StubCheck()
+  let setup = whisper.makeSetup(selfCheck: stub.run)
+  await setup.download()
+  #expect(setup.state == .checked(.passed))
+
+  setup.select(.whisper)
+  #expect(setup.state == .whisperModelMissing(downloadBytes: Int64(whisperModel.count)))
+  #expect(whisper.setting.engine == .whisper, "選んだエンジンを保存する")
+  #expect(setup.engine == .whisper)
+  #expect(setup.installation.engine == .whisper)
+
+  setup.select(.haas)
+  #expect(setup.state == .checking, "Haas に戻すと揃ったファイルの動作確認をする")
+  try await waitUntil { setup.state == .checked(.passed) }
+  #expect(whisper.setting.engine == .haas)
+  #expect(stub.calls == 2)
+  #expect(whisper.requestCount(whisper.whisperURL) == 0, "選ぶだけでは取得しない")
+}
+
+@MainActor
+@Test func selectingEngineIsIgnoredWhileChecking() async throws {
+  let whisper = WhisperHarness(engine: .haas)
+  defer { whisper.remove() }
+  let stub = StubCheck()
+  stub.holds = true
+  let setup = whisper.makeSetup(selfCheck: stub.run)
+  let first = Task { await setup.download() }
+  try await waitUntil { stub.isHolding }
+
+  setup.select(.whisper)
+
+  #expect(setup.state == .checking, "確認中は選択を受け付けない")
+  #expect(whisper.setting.engine == .haas, "確認中は設定値も変えない")
+  #expect(setup.engine == .haas)
+  stub.release()
+  await first.value
+  #expect(setup.state == .checked(.passed))
+}
+
+@MainActor
+@Test func selectingHaasAfterFailedWhisperDownloadChecks() async throws {
+  let whisper = WhisperHarness(engine: .haas)
+  defer { whisper.remove() }
+  let stub = StubCheck()
+  let setup = whisper.makeSetup(selfCheck: stub.run)
+  await setup.download()
+  setup.select(.whisper)
+  LocalFileURLProtocol.set(
+    .init(body: whisperModel, failImmediately: true), for: whisper.whisperURL)
+  await setup.download()
+  #expect(setup.state == .failed(.network))
+
+  setup.select(.haas)
+
+  #expect(setup.state == .checking, "Haas に要るファイルは揃っているので動作確認に進む")
+  try await waitUntil { setup.state == .checked(.passed) }
+  #expect(stub.calls == 2)
+}
+
+@MainActor
+@Test func selectingWhisperAfterInsufficientSpaceRederivesState() async throws {
+  let whisper = WhisperHarness(engine: .haas)
+  defer { whisper.remove() }
+  await whisper.makeSetup().download()
+  try FileManager.default.removeItem(at: whisper.installation.diarizationModelFile)
+  let setup = whisper.makeSetup(available: 1000)
+  await setup.download()
+  #expect(
+    setup.state == .insufficientSpace(required: Int64(diarizationModel.count), available: 1000))
+
+  setup.select(.whisper)
+
+  #expect(
+    setup.state
+      == .whisperModelMissing(downloadBytes: Int64(whisperModel.count + diarizationModel.count)))
+}
+
+@MainActor
+@Test func defaultEngineDoesNotRequestWhisperModel() async {
+  let whisper = WhisperHarness(engine: nil)
+  defer { whisper.remove() }
+  let setup = whisper.makeSetup()
+  #expect(setup.engine == .haas, "保存値が無ければ Haas")
+
+  await setup.download()
+
+  #expect(setup.state == .checked(.passed))
+  #expect(whisper.requestCount(whisper.whisperURL) == 0)
+  #expect(!whisper.installation.hasWhisperModel)
+}
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_E2E"] == "1"))
+func realDownloadInstallsWhisperModel() async throws {
+  let suiteName = "SpeechSetupTests-\(UUID().uuidString)"
+  defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+  let setting = TranscriptionSetting(defaults: try #require(UserDefaults(suiteName: suiteName)))
+  setting.setEngine(.whisper)
+  let setup = SpeechSetup(selfCheck: { _ in .passed }, setting: setting)
+  await setup.download()
+
+  let installation = SpeechInstallation.standard.selecting(.whisper)
+  #expect(setup.state == .checked(.passed))
+  #expect(installation.isInstalled)
+  #expect(installation.hasWhisperModel)
+  let size =
+    try FileManager.default.attributesOfItem(atPath: installation.whisperModelFile.path)[
+      .size] as? Int
+  #expect(size == 874_188_075)
+}

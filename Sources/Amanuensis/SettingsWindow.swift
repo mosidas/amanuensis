@@ -40,6 +40,7 @@ private struct SettingsView: View {
         MeetingDetectionSettingsView(setting: MeetingDetectionSetting())
       }
       Section("音声認識") {
+        EngineSettingsView(setup: speechSetup) { transcriber.resumeAfterSetup() }
         SpeechSettingsView(state: speechSetup.state, installation: speechSetup.installation) {
           action in
           Task {

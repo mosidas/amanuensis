@@ -12,15 +12,33 @@ struct SpeechInstallation: Sendable {
   var runtimeExtractedByteCount: Int64 = 21_074_311
   var model = RemoteFile.haasModel
   var diarizationModel = RemoteFile.nemotronDiarization
+  /// 本文を起こすエンジン。使う側が設定から `selecting(_:)` で写す。
+  var engine = TranscriptionEngine.haas
+  var whisperModel = RemoteFile.whisperLargeV3Turbo
+  /// アプリに同梱する whisper-cli(scripts/bundle.sh が置く)。
+  var whisperExecutable = Bundle.main.bundleURL.appending(path: "Contents/MacOS/whisper-cli")
 
   var runtimeDirectory: URL { directory.appending(path: "runtime") }
   var executable: URL { runtimeDirectory.appending(path: "speech") }
   var modelFile: URL { directory.appending(path: model.fileName) }
   var selfCheckLog: URL { directory.appending(path: "selfcheck.log") }
   var diarizationModelFile: URL { directory.appending(path: diarizationModel.fileName) }
-  /// 文字起こしに要るランタイムと Haas が揃っている。話者分離のモデルは含めない。
-  var isInstalled: Bool { exists(executable) && exists(modelFile) }
+  var whisperModelFile: URL { directory.appending(path: whisperModel.fileName) }
+  /// ランタイムと Haas が揃っている。動作確認はエンジンによらず Haas で行うので、どのエンジンでも要る。
+  var hasHaas: Bool { exists(executable) && exists(modelFile) }
+  var hasWhisperModel: Bool { exists(whisperModelFile) }
+  /// 選んだエンジンで文字起こしするのに要るファイルが揃っている。話者分離のモデルは含めない。
+  var isInstalled: Bool { hasHaas && (engine == .haas || hasWhisperModel) }
   var hasDiarizationModel: Bool { exists(diarizationModelFile) }
+  /// 本文を起こすモデル。
+  var recognitionModel: RemoteFile { engine == .whisper ? whisperModel : model }
+
+  /// `engine` を選んだときに要るファイルの集合。
+  func selecting(_ engine: TranscriptionEngine) -> SpeechInstallation {
+    var selected = self
+    selected.engine = engine
+    return selected
+  }
 
   static let standard = SpeechInstallation(
     directory: URL.applicationSupportDirectory.appending(path: "amanuensis"))
@@ -30,6 +48,9 @@ enum SetupState: Equatable {
   case notInstalled
   /// ランタイムと Haas はあり、話者分離のモデルだけが無い。
   case diarizationModelMissing
+  /// ランタイムと Haas はあり、選んだエンジンの Whisper のモデルが無い。
+  /// `downloadBytes` は Whisper のモデルと、無ければ話者分離のモデルの合計。
+  case whisperModelMissing(downloadBytes: Int64)
   case downloading(receivedBytes: Int64, totalBytes: Int64)
   case verifying
   case checking
@@ -47,8 +68,8 @@ extension URLSession {
     let configuration = URLSessionConfiguration.default
     // shortcut: 無通信 60 秒で打ち切る(実測なしの仮の値), 遅い回線で誤って切れる報告があれば実測から決め直す
     configuration.timeoutIntervalForRequest = 60
-    // shortcut: 1 時間は 656 MB を 1.5 Mbps で取り切る長さ, それより遅い回線の利用者が出たら延ばす
-    configuration.timeoutIntervalForResource = 3600
+    // shortcut: 2 時間は最も大きい Whisper のモデル(874 MB)を 1.5 Mbps で取り切る 4,662 秒を超える長さ, それより遅い回線の利用者が出たら延ばす
+    configuration.timeoutIntervalForResource = 7200
     return URLSession(configuration: configuration)
   }()
 }
@@ -56,17 +77,25 @@ extension URLSession {
 /// ランタイムとモデルの取得と動作確認の状態を持つ。状態の持ち主はこの型だけである。
 @MainActor @Observable final class SpeechSetup {
   private(set) var state = SetupState.notInstalled
-  let installation: SpeechInstallation
+  private(set) var engine: TranscriptionEngine
+  private let base: SpeechInstallation
   private let session: URLSession
   private let availableCapacity: (URL) throws -> Int64
   private let selfCheck: (SpeechInstallation) async -> SelfCheckOutcome
+  private let setting: TranscriptionSetting
+
+  /// 選んだエンジンに要るファイルの集合。
+  var installation: SpeechInstallation { base.selecting(engine) }
 
   init(
     installation: SpeechInstallation = .standard, session: URLSession = .speechDownloads,
     availableCapacity: @escaping (URL) throws -> Int64 = volumeAvailableCapacity,
-    selfCheck: @escaping (SpeechInstallation) async -> SelfCheckOutcome = runBundledSelfCheck
+    selfCheck: @escaping (SpeechInstallation) async -> SelfCheckOutcome = runBundledSelfCheck,
+    setting: TranscriptionSetting = TranscriptionSetting()
   ) {
-    self.installation = installation
+    self.base = installation
+    self.setting = setting
+    self.engine = setting.engine
     self.session = session
     self.availableCapacity = availableCapacity
     self.selfCheck = selfCheck
@@ -77,28 +106,43 @@ extension URLSession {
   /// 未取得からファイルが揃っていたら(起動後に初めて開いたとき)動作確認を始める。
   func refresh() {
     switch state {
-    case .notInstalled, .diarizationModelMissing, .checked:
-      if !installation.isInstalled {
-        state = .notInstalled
-      } else if !installation.hasDiarizationModel {
-        state = .diarizationModelMissing
-      } else if state == .notInstalled || state == .diarizationModelMissing {
+    case .notInstalled, .diarizationModelMissing, .whisperModelMissing:
+      if let missing {
+        state = missing
+      } else {
         state = .checking
         Task { await runCheck() }
       }
+    case .checked:
+      if let missing { state = missing }
     case .downloading, .verifying, .checking, .insufficientSpace, .failed: return
     }
   }
 
-  /// 足りないファイル(ランタイム・Haas・話者分離のモデル)を取得して展開し、動作確認する。取得と確認の途中に呼ばれたら何もしない。
+  /// 選んだエンジンに足りないファイルを示す状態。揃っていれば nil。
+  private var missing: SetupState? {
+    if !installation.hasHaas { return .notInstalled }
+    if !installation.isInstalled {
+      return .whisperModelMissing(
+        downloadBytes: installation.whisperModel.byteCount
+          + (installation.hasDiarizationModel ? 0 : installation.diarizationModel.byteCount))
+    }
+    if !installation.hasDiarizationModel { return .diarizationModelMissing }
+    return nil
+  }
+
+  /// 足りないファイル(ランタイム・Haas・Whisper を選んでいれば Whisper のモデル・話者分離のモデル)を取得して展開し、
+  /// 動作確認する。取得と確認の途中に呼ばれたら何もしない。
   func download() async {
     guard !isBusy else { return }
     let needsRuntime = !exists(installation.executable)
     let needsModel = !exists(installation.modelFile)
+    let needsWhisperModel = installation.engine == .whisper && !installation.hasWhisperModel
     let needsDiarizationModel = !exists(installation.diarizationModelFile)
     let pending = [
       needsRuntime ? installation.runtime : nil,
       needsModel ? installation.model : nil,
+      needsWhisperModel ? installation.whisperModel : nil,
       needsDiarizationModel ? installation.diarizationModel : nil,
     ]
     .compactMap { $0 }
@@ -130,7 +174,7 @@ extension URLSession {
       return
     }
     logger.info(
-      "setup started required=\(required, privacy: .public) available=\(available, privacy: .public)"
+      "setup started required=\(required, privacy: .public) available=\(available, privacy: .public) engine=\(self.engine.rawValue, privacy: .public)"
     )
 
     let total = pending.reduce(0) { $0 + $1.byteCount }
@@ -145,6 +189,10 @@ extension URLSession {
       if needsModel {
         try await fetch(installation.model, before: done, of: total)
         done += installation.model.byteCount
+      }
+      if needsWhisperModel {
+        try await fetch(installation.whisperModel, before: done, of: total)
+        done += installation.whisperModel.byteCount
       }
       if needsDiarizationModel {
         try await fetch(installation.diarizationModel, before: done, of: total)
@@ -180,10 +228,28 @@ extension URLSession {
     await download()
   }
 
-  private var isBusy: Bool {
+  /// 本文を起こすエンジンを保存し、そのエンジンに要るファイルから状態を導き直す(替える前の取得の失敗と容量不足の表示は残さない)。
+  /// 取得と確認の途中に呼ばれたら何もしない。
+  func select(_ engine: TranscriptionEngine) {
+    guard !isBusy else { return }
+    setting.setEngine(engine)
+    self.engine = setting.engine
+    logger.info("setup engine selected engine=\(self.engine.rawValue, privacy: .public)")
+    switch state {
+    case .failed, .insufficientSpace: state = .notInstalled
+    case .notInstalled, .diarizationModelMissing, .whisperModelMissing, .downloading, .verifying,
+      .checking, .checked:
+      break
+    }
+    refresh()
+  }
+
+  var isBusy: Bool {
     switch state {
     case .downloading, .verifying, .checking: true
-    case .notInstalled, .diarizationModelMissing, .checked, .insufficientSpace, .failed: false
+    case .notInstalled, .diarizationModelMissing, .whisperModelMissing, .checked,
+      .insufficientSpace, .failed:
+      false
     }
   }
 

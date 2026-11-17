@@ -5,6 +5,7 @@ Web 会議を検知して録音し、録音の後に日本語の文字起こし�
 - 会議の検知と自動の録音
 - 録音の後の日本語の文字起こし
 - 話者のラベル付け(設定の「話者を分ける」)
+- 本文のエンジンの選択(Haas・Whisper)
 - 録音の一覧(メニューの「録音の一覧…」)
 
 ## 動作環境
@@ -29,7 +30,7 @@ Web 会議を検知して録音し、録音の後に日本語の文字起こし�
 ## 使い方
 
 1. メニューバーのアイコンのメニューから「設定…」を選択する。
-2. 「音声認識」の「ダウンロード」を押す。amanuensis は音声認識のランタイム・音声認識のモデル・話者分離のモデルをまとめて取得する。取得するファイルと容量は [ライセンス](#ライセンス) の表に示す。
+2. 「音声認識」の「ダウンロード」を押す。amanuensis は音声認識のランタイム・音声認識のモデル・話者分離のモデルをまとめて取得する。設定の「本文のエンジン」で Whisper を選んでいるときは Whisper のモデルも取得する。取得するファイルと容量は [ライセンス](#ライセンス) の表に示す。
 3. 会議アプリがマイクを使い始めると録音が始まる。対象は Zoom・Microsoft Teams・Google Chrome(Google Meet)・Slack(ハドル)である。メニューの「録音を開始」で手動でも始められる。
 4. 初めての録音では、マイク・システムオーディオ録音・書類フォルダー・通知の許可を求められる。許可する。録音と会議の検知にはマイクとシステムオーディオ録音の許可が必要になる。後からシステム設定 > プライバシーとセキュリティ > 画面収録とシステムオーディオ録音 > システムオーディオ録音のみで許可したときは amanuensis を開き直す。
 5. 会議が終わってマイクが使われなくなると録音が止まる。続けて文字起こしが始まる。「録音を開始」で始めた録音はメニューの「停止」で止める。
@@ -74,3 +75,4 @@ amanuensis のライセンスは [MIT License](LICENSE) である。アプリは
 | speech.cpp v0.10.1 のランタイム(macOS arm64 Metal) | [nyosegawa/speech.cpp](https://github.com/nyosegawa/speech.cpp) | 6.1 MB(展開後 21 MB) | MIT |
 | Haas-ja-v1.0(Third Intelligence)の GGUF 変換(Q8_0) | [sakasegawa/Haas-ja-v1.0-GGUF](https://huggingface.co/sakasegawa/Haas-ja-v1.0-GGUF)。元のモデルは [third-intelligence/Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0) | 656 MB | Apache 2.0 |
 | Nemotron-3-Diarization(NVIDIA)の GGUF 変換(Q8_0) | [sakasegawa/Nemotron-3-Diarization-GGUF](https://huggingface.co/sakasegawa/Nemotron-3-Diarization-GGUF)。元のモデルは [nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) | 106 MB | OpenMDW 1.1 |
+| Whisper large-v3-turbo(OpenAI)の whisper.cpp 変換(q8_0) | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)。元のモデルは [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | 874 MB | MIT |

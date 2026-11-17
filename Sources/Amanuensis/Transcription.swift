@@ -187,10 +187,16 @@ enum TranscriptionNotice: Equatable {
   case finishedWithoutSpeakers(SpeakerSkip, meeting: String)
 }
 
-/// 録音を停止したら自動で文字起こしするか、段落に話者のラベルを付けるかの設定。
+/// 本文を起こすエンジン。保存値は raw value。
+enum TranscriptionEngine: String {
+  case haas, whisper
+}
+
+/// 録音を停止したら自動で文字起こしするか、段落に話者のラベルを付けるか、本文をどのエンジンで起こすかの設定。
 struct TranscriptionSetting {
   private static let key = "transcribeAfterRecording"
   private static let separateSpeakersKey = "separateSpeakers"
+  private static let engineKey = "transcriptionEngine"
   private let defaults: UserDefaults
 
   init(defaults: UserDefaults = .standard) {
@@ -209,6 +215,15 @@ struct TranscriptionSetting {
 
   func setSeparateSpeakers(_ separateSpeakers: Bool) {
     defaults.set(separateSpeakers, forKey: Self.separateSpeakersKey)
+  }
+
+  /// 保存値が文字列でないか、どのエンジンの名前でもなければ Haas。
+  var engine: TranscriptionEngine {
+    (defaults.object(forKey: Self.engineKey) as? String).flatMap(TranscriptionEngine.init) ?? .haas
+  }
+
+  func setEngine(_ engine: TranscriptionEngine) {
+    defaults.set(engine.rawValue, forKey: Self.engineKey)
   }
 }
 

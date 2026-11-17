@@ -100,3 +100,105 @@ import Testing
   folder.setRoot(directory.appending(path: "unplugged-volume"))
   #expect(showRecordings(folder: folder) == .rootMissing(isStandard: false))
 }
+
+/// 一時ディレクトリにランタイム・Haas・話者分離のモデルを置き、専用の UserDefaults の suite に設定を持つ。
+@MainActor private struct EngineHarness {
+  let suiteName = "SettingsWindowTests-\(UUID().uuidString)"
+  let installation = SpeechInstallation(
+    directory: FileManager.default.temporaryDirectory.appending(
+      path: "SettingsWindowTests-\(UUID().uuidString)"))
+  var setting: TranscriptionSetting {
+    TranscriptionSetting(defaults: UserDefaults(suiteName: suiteName)!)
+  }
+
+  init() throws {
+    try FileManager.default.createDirectory(
+      at: installation.runtimeDirectory, withIntermediateDirectories: true)
+    for file in [
+      installation.executable, installation.modelFile, installation.diarizationModelFile,
+    ] {
+      try Data().write(to: file)
+    }
+  }
+
+  func remove() {
+    UserDefaults().removePersistentDomain(forName: suiteName)
+    try? FileManager.default.removeItem(at: installation.directory)
+  }
+}
+
+/// `EngineSettingsView` をウィンドウに置き、ビューの中のポップアップを返す。
+@MainActor private func hostEngineSettings(_ view: EngineSettingsView) throws -> (
+  NSWindow, NSPopUpButton
+) {
+  _ = NSApplication.shared
+  let hosting = NSHostingView(rootView: Form { view }.formStyle(.grouped))
+  let window = NSWindow(
+    contentRect: NSRect(x: 0, y: 0, width: 520, height: 160), styleMask: [.titled],
+    backing: .buffered, defer: false)
+  window.isReleasedWhenClosed = false
+  window.contentView = hosting
+  hosting.layoutSubtreeIfNeeded()
+  RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+  let popup = try #require(findPopUp(in: hosting), "「本文のエンジン」のポップアップがある")
+  // SwiftUI はメニューを開くときに項目を作るので、開いて閉じる。
+  let cell = try #require(popup.cell as? NSPopUpButtonCell)
+  let menu = try #require(popup.menu)
+  menu.delegate?.menuWillOpen?(menu)
+  cell.attachPopUp(withFrame: popup.bounds, in: popup)
+  cell.dismissPopUp()
+  RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+  return (window, popup)
+}
+
+@MainActor private func findPopUp(in view: NSView) -> NSPopUpButton? {
+  view as? NSPopUpButton ?? view.subviews.lazy.compactMap { findPopUp(in: $0) }.first
+}
+
+/// `condition` が真になるまで 10ms ごとに確かめる。5 秒で諦める。
+@MainActor private func waitUntil(_ condition: () -> Bool) async throws {
+  let deadline = ContinuousClock.now + .seconds(5)
+  while !condition() {
+    try #require(ContinuousClock.now < deadline, "5 秒以内に条件を満たす")
+    try await Task.sleep(for: .milliseconds(10))
+  }
+}
+
+@Test @MainActor func choosingWhisperSavesEngineAndShowsWhisperModelMissing() async throws {
+  let harness = try EngineHarness()
+  defer { harness.remove() }
+  let setup = SpeechSetup(
+    installation: harness.installation, selfCheck: { _ in .passed }, setting: harness.setting)
+  try await waitUntil { setup.state == .checked(.passed) }
+  var changes = 0
+  let (window, popup) = try hostEngineSettings(EngineSettingsView(setup: setup) { changes += 1 })
+  defer { window.close() }
+  #expect(popup.itemTitles == ["Haas", "Whisper"], "Haas を先に並べる")
+  #expect(popup.title == "Haas", "保存値が無ければ Haas を出す")
+  #expect(popup.isEnabled)
+
+  popup.menu?.performActionForItem(at: popup.indexOfItem(withTitle: "Whisper"))
+
+  #expect(harness.setting.engine == .whisper, "選ぶと保存する")
+  #expect(
+    setup.state == .whisperModelMissing(downloadBytes: RemoteFile.whisperLargeV3Turbo.byteCount))
+  #expect(changes == 1)
+}
+
+@Test @MainActor func engineCannotBeChosenWhileChecking() async throws {
+  let harness = try EngineHarness()
+  defer { harness.remove() }
+  let (gate, open) = AsyncStream.makeStream(of: Never.self)
+  defer { open.finish() }
+  let setup = SpeechSetup(
+    installation: harness.installation,
+    selfCheck: { _ in
+      for await _ in gate {}
+      return .passed
+    }, setting: harness.setting)
+  #expect(setup.state == .checking)
+  let (window, popup) = try hostEngineSettings(EngineSettingsView(setup: setup) {})
+  defer { window.close() }
+
+  #expect(!popup.isEnabled, "確認中は選べない")
+}

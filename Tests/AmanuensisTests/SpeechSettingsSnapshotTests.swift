@@ -210,3 +210,29 @@ func settingsTextMatchesTable(name: String) throws {
   try png.write(to: url)
   window.close()
 }
+
+// 1_642_836_792 はランタイム・Haas・Whisper・話者分離のモデルの合計。980_367_563 は Whisper と話者分離のモデルの合計。
+@Test func whisperSettingsTextMatchesTable() {
+  #expect(
+    SpeechSettingsText.display(for: .notInstalled, folder: folder, engine: .whisper)
+      == .init(
+        title: "音声認識モデルは未取得です", body: "ダウンロードの容量は 1.64 GB です。", isFailure: false,
+        primary: download))
+  #expect(
+    SpeechSettingsText.display(
+      for: .whisperModelMissing(downloadBytes: 874_188_075), folder: folder, engine: .whisper)
+      == .init(
+        title: "Whisper のモデルは未取得です", body: "本文を Whisper で起こすときに使います。ダウンロードの容量は 874 MB です。",
+        isFailure: false, primary: download))
+  #expect(
+    SpeechSettingsText.display(
+      for: .whisperModelMissing(downloadBytes: 980_367_563), folder: folder, engine: .whisper)
+      == .init(
+        title: "Whisper のモデルは未取得です", body: "本文を Whisper で起こすときに使います。ダウンロードの容量は 980 MB です。",
+        isFailure: false, primary: download))
+  for row in rows where row.name != "not-installed" {
+    #expect(
+      SpeechSettingsText.display(for: row.state, folder: folder, engine: .whisper) == row.display,
+      "\(row.name) は Whisper を選んでも同じ文言")
+  }
+}

@@ -39,3 +39,31 @@ struct TranscriptionSettingsView: View {
     }
   }
 }
+
+/// 本文を起こすエンジンの選択。選ぶと下の「音声認識」の表示が選んだエンジンに要るファイルに替わる。
+/// 取得と確認の途中は選べない。
+struct EngineSettingsView: View {
+  let setup: SpeechSetup
+  let onChange: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Picker(
+        "本文のエンジン",
+        selection: Binding(
+          get: { setup.engine },
+          set: {
+            setup.select($0)
+            onChange()
+          })
+      ) {
+        Text("Haas").tag(TranscriptionEngine.haas)
+        Text("Whisper").tag(TranscriptionEngine.whisper)
+      }
+      .disabled(setup.isBusy)
+      Text("Whisper は英字の略語と数字を正しく起こしやすく、文字起こしに Haas より時間がかかります。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+}
