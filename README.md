@@ -22,10 +22,9 @@ Web 会議を検知して録音し、録音の後に日本語の文字起こし�
 
 ### ソースからビルドする
 
-1. Swift 6.0 以上を含む Xcode か Command Line Tools をインストールする。
-2. 同梱する whisper.cpp のビルドに使う CMake と git をインストールする。CMake は `brew install cmake` で入る。git は Command Line Tools に含まれる。
-3. `scripts/bundle.sh` を実行する。`dist/Amanuensis.app` ができる。
-4. `Amanuensis.app` を `/Applications` へコピーして開く。
+1. Swift 6.0 以上を含む Xcode か Command Line Tools と、CMake(`brew install cmake`)をインストールする。
+2. `scripts/bundle.sh` を実行する。`dist/Amanuensis.app` ができる。
+3. `Amanuensis.app` を `/Applications` へコピーして開く。
 
 ## 使い方
 

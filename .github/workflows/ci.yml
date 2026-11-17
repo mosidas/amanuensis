@@ -19,7 +19,6 @@ jobs:
           persist-credentials: false
       - run: swift --version
       - run: scripts/test.sh
-      # 同梱の whisper-cli のビルドの破損をタグの push より前に見つける
       - run: scripts/bundle.sh
       - run: dist/Amanuensis.app/Contents/MacOS/whisper-cli --help > /dev/null
 
