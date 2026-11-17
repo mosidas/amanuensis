@@ -102,11 +102,12 @@ extension URLSession {
     refresh()
   }
 
-  /// 未取得か確認済みのときだけディスクの中身から状態を導き直す。取得と確認の途中と失敗の表示は変えない。
+  /// 未取得か確認済みのときだけ、保存したエンジンとディスクの中身から状態を導き直す。取得と確認の途中と失敗の表示は変えない。
   /// 未取得からファイルが揃っていたら(起動後に初めて開いたとき)動作確認を始める。
   func refresh() {
     switch state {
     case .notInstalled, .diarizationModelMissing, .whisperModelMissing:
+      engine = setting.engine
       if let missing {
         state = missing
       } else {
@@ -114,6 +115,7 @@ extension URLSession {
         Task { await runCheck() }
       }
     case .checked:
+      engine = setting.engine
       if let missing { state = missing }
     case .downloading, .verifying, .checking, .insufficientSpace, .failed: return
     }
@@ -233,8 +235,7 @@ extension URLSession {
   func select(_ engine: TranscriptionEngine) {
     guard !isBusy else { return }
     setting.setEngine(engine)
-    self.engine = setting.engine
-    logger.info("setup engine selected engine=\(self.engine.rawValue, privacy: .public)")
+    logger.info("setup engine selected engine=\(engine.rawValue, privacy: .public)")
     switch state {
     case .failed, .insufficientSpace: state = .notInstalled
     case .notInstalled, .diarizationModelMissing, .whisperModelMissing, .downloading, .verifying,

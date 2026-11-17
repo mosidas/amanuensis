@@ -751,6 +751,21 @@ private struct WhisperHarness {
 }
 
 @MainActor
+@Test func refreshFollowsEngineWrittenOutside() async throws {
+  let whisper = WhisperHarness(engine: .haas)
+  defer { whisper.remove() }
+  let setup = whisper.makeSetup()
+  await setup.download()
+  #expect(setup.state == .checked(.passed))
+
+  whisper.setting.setEngine(.whisper)
+  setup.refresh()
+
+  #expect(setup.engine == .whisper, "外で書き換えた保存値を読み直す")
+  #expect(setup.state == .whisperModelMissing(downloadBytes: Int64(whisperModel.count)))
+}
+
+@MainActor
 @Test func defaultEngineDoesNotRequestWhisperModel() async {
   let whisper = WhisperHarness(engine: nil)
   defer { whisper.remove() }
