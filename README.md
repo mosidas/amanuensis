@@ -23,8 +23,9 @@ Web 会議を検知して録音し、録音の後に日本語の文字起こし�
 ### ソースからビルドする
 
 1. Swift 6.0 以上を含む Xcode か Command Line Tools をインストールする。
-2. `scripts/bundle.sh` を実行する。`dist/Amanuensis.app` ができる。
-3. `Amanuensis.app` を `/Applications` へコピーして開く。
+2. 同梱する whisper.cpp のビルドに使う CMake と git をインストールする。CMake は `brew install cmake` で入る。git は Command Line Tools に含まれる。
+3. `scripts/bundle.sh` を実行する。`dist/Amanuensis.app` ができる。
+4. `Amanuensis.app` を `/Applications` へコピーして開く。
 
 ## 使い方
 
@@ -67,7 +68,7 @@ scripts/test.sh
 
 ## ライセンス
 
-amanuensis のライセンスは [MIT License](LICENSE) である。アプリが取得するファイルの取得元・容量・ライセンスは次のとおりである。
+amanuensis のライセンスは [MIT License](LICENSE) である。アプリは whisper.cpp v1.9.5 の whisper-cli(MIT License)を同梱する。著作権表示は Amanuensis.app/Contents/Resources/whisper.cpp-LICENSE にある。アプリが取得するファイルの取得元・容量・ライセンスは次のとおりである。
 
 | ファイル | 取得元 | 容量 | ライセンス |
 | :-- | :-- | :-- | :-- |

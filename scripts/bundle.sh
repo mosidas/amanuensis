@@ -18,15 +18,19 @@ esac || {
 echo "bundle.sh: version=$version"
 
 swift build -c release
+scripts/build-whisper.sh
 app=dist/Amanuensis.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$(swift build -c release --show-bin-path)/Amanuensis" "$app/Contents/MacOS/Amanuensis"
+cp .build/whisper-cpp/whisper-cli "$app/Contents/MacOS/whisper-cli"
 # 動作確認用の音声と原稿(Resources/SelfCheck/sample.{wav,txt})をアプリに同梱する。
 mkdir -p "$app/Contents/Resources"
 cp -R Resources/SelfCheck "$app/Contents/Resources/SelfCheck"
 cp Resources/MenuBarIcon.pdf "$app/Contents/Resources/MenuBarIcon.pdf"
 cp Resources/MenuBarIconRecording.tiff "$app/Contents/Resources/MenuBarIconRecording.tiff"
+# whisper.cpp(MIT)の著作権表示を配布物に入れる。
+cp .build/whisper-cpp/LICENSE "$app/Contents/Resources/whisper.cpp-LICENSE"
 
 # Resources/AppIcon.png(1024 px)から 10 サイズの iconset を作り、AppIcon.icns に固める。
 tmp=$(mktemp -d)
@@ -72,4 +76,5 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+codesign --force --sign - "$app/Contents/MacOS/whisper-cli"
 codesign --force --sign - "$app"
