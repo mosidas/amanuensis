@@ -24,7 +24,10 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   let name = meeting.lastPathComponent
   let log = meeting.appending(path: "transcription.log")
   let started = ContinuousClock.now
-  logger.info("transcription started folder.name=\(name, privacy: .public)")
+  let engine = installation.engine.rawValue
+  logger.info(
+    "transcription started folder.name=\(name, privacy: .public) engine=\(engine, privacy: .public)"
+  )
 
   func failed(
     _ failure: TranscriptionFailure, step: String, type: String, status: Int32? = nil,
@@ -32,7 +35,7 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   ) -> TranscriptionFailure {
     let status = status.map(String.init) ?? "none"
     logger.error(
-      "transcription failed step=\(step, privacy: .public) error.type=\(type, privacy: .public) app.error.origin=system status=\(status, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(stderr, privacy: .private)"
+      "transcription failed step=\(step, privacy: .public) error.type=\(type, privacy: .public) app.error.origin=system status=\(status, privacy: .public) engine=\(engine, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(stderr, privacy: .private)"
     )
     return failure
   }
@@ -53,12 +56,15 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
     logger.info(
       "transcription speakers skipped reason=model_missing folder.name=\(name, privacy: .public)")
   }
-  let whole = separateSpeakers && skip == nil ? temporary.appending(path: "whole.wav") : nil
+  let labelsSpeakers = separateSpeakers && skip == nil
+  let whole = temporary.appending(path: "whole.wav")
+  // shortcut: Whisper でも区間を書く(1 時間で約 345 MB の一時ファイルが余る), 一時ファイルの容量が問題になったら Whisper では区間を書かない
+  let writesWhole = installation.engine == .whisper || labelsSpeakers
   let chunks: [AudioChunk]
   let duration: TimeInterval
   do {
     (chunks, duration) = try writeMonoChunks(
-      of: meeting.appending(path: "recording.caf"), to: temporary, whole: whole)
+      of: meeting.appending(path: "recording.caf"), to: temporary, whole: writesWhole ? whole : nil)
   } catch {
     throw failed(
       error, step: "prepare", type: error == .audioUnreadable ? "audio_unreadable" : "file_system")
@@ -67,35 +73,23 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   // 実測: M2 で asr の RTFx 30〜95、diarize の RTFx 121〜209。120 秒は初回のモデル読み込みの見込み
   // (runBundledSelfCheck と同じ)、録音の 0.5 倍はその 60 倍以上の余裕。
   // shortcut: 120 秒 + 録音の 0.5 倍, Metal の無い環境で時間切れの報告があれば実測から決め直す
+  // shortcut: Whisper も 120 秒 + 録音の 0.5 倍(試作: 75 秒の録音を冷えた 1 回目 19.6 秒、2 回目以降 6 秒前後), Whisper の初回の読み込みを含む実測で決め直す
   let timeout: Duration = .seconds(120) + .seconds(duration * 0.5)
   var tokens: [RecognizedToken] = []
   if !chunks.isEmpty {
-    let stdout: Data
-    do {
-      stdout = try await runSpeech(
-        installation.executable,
-        ["asr", installation.modelFile.path, "--timestamps", "--format", "json"]
-          + chunks.map(\.file.path),
-        timeout: timeout)
+    do throws(RecognitionFailure) {
+      tokens = try await recognize(
+        chunks, whole: whole, duration: duration, installation: installation, timeout: timeout)
     } catch {
-      let status = error.status.map(String.init) ?? "none"
-      appendLog(
-        "transcription failed error.type=\(error.type) status=\(status) stderr=\(error.maskedStderrTail)",
-        to: log)
+      appendLog(error.logLine, to: log)
       throw failed(
-        .recognitionFailed, step: "recognize", type: error.type, status: error.status,
-        stderr: error.stderrTail)
-    }
-    do {
-      tokens = try recognizedTokens(stdout, chunks: chunks)
-    } catch {
-      appendLog("transcription failed error.type=unparsable_output", to: log)
-      throw failed(.recognitionFailed, step: "parse", type: "unparsable_output")
+        .recognitionFailed, step: error.step, type: error.type, status: error.status,
+        stderr: error.stderr)
     }
   }
 
   var speakers: [SpeakerSegment]?
-  if let whole, !tokens.isEmpty {
+  if labelsSpeakers, !tokens.isEmpty {
     do throws(SpeakerFailure) {
       speakers = try await diarizeSpeakers(
         of: whole, duration: duration, installation: installation, timeout: timeout)
@@ -109,7 +103,7 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   }
 
   let transcript = Transcript(
-    meetingName: name, duration: duration, model: installation.model.fileName,
+    meetingName: name, duration: duration, model: installation.recognitionModel.fileName,
     paragraphs: paragraphs(tokens, speakers: speakers))
   do {
     try Data(transcript.markdown.utf8).write(
@@ -127,9 +121,83 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
     }
   let speakerCount = Set(transcript.paragraphs.compactMap(\.speaker)).count
   logger.info(
-    "transcription finished folder.name=\(name, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public) speakers.status=\(speakersStatus, privacy: .public) speakers.count=\(speakerCount, privacy: .public)"
+    "transcription finished folder.name=\(name, privacy: .public) engine=\(engine, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public) speakers.status=\(speakersStatus, privacy: .public) speakers.count=\(speakerCount, privacy: .public)"
   )
   return skip
+}
+
+/// 本文の認識が失敗した理由。`step` は `recognize`・`parse`、`type` はログの `error.type`。
+private struct RecognitionFailure: Error {
+  let step: String
+  let type: String
+  var status: Int32? = nil
+  /// os のログに `privacy: .private` で出す標準エラー出力の末尾。
+  var stderr = ""
+  /// `transcription.log` に追記する 1 行(標準エラー出力はホームを伏せる)。
+  let logLine: String
+
+  /// 子プロセスが成功しなかった。`label` は `transcription.log` の行の先頭。
+  init(_ failure: SpeechFailure, label: String) {
+    step = "recognize"
+    type = failure.type
+    status = failure.status
+    stderr = failure.stderrTail
+    let shownStatus = failure.status.map(String.init) ?? "none"
+    logLine =
+      "\(label) failed error.type=\(failure.type) status=\(shownStatus) stderr=\(failure.maskedStderrTail)"
+  }
+
+  /// 出力が想定の形でなかった。
+  init(unparsableOutputOf label: String) {
+    step = "parse"
+    type = "unparsable_output"
+    logLine = "\(label) failed error.type=unparsable_output"
+  }
+}
+
+/// 選んだエンジンで本文を語の列に起こす。Haas は区間 `chunks` を、Whisper は録音全体の WAVE `whole` を読む。
+private func recognize(
+  _ chunks: [AudioChunk], whole: URL, duration: TimeInterval, installation: SpeechInstallation,
+  timeout: Duration
+) async throws(RecognitionFailure) -> [RecognizedToken] {
+  switch installation.engine {
+  case .haas:
+    let stdout: Data
+    do {
+      stdout = try await runSpeech(
+        installation.executable,
+        ["asr", installation.modelFile.path, "--timestamps", "--format", "json"]
+          + chunks.map(\.file.path),
+        timeout: timeout)
+    } catch {
+      throw RecognitionFailure(error, label: "transcription")
+    }
+    do {
+      return try recognizedTokens(stdout, chunks: chunks)
+    } catch {
+      throw RecognitionFailure(unparsableOutputOf: "transcription")
+    }
+  case .whisper:
+    // -mc 0: 前の文脈を渡さず、反復の幻聴を減らす(mlx-whisper の --condition-on-previous-text False に当たる)。
+    // 区間でなく全体を渡す: 区間が無音で始まると、Whisper はその区間の最初の段落を 0 秒に置く(試作で確かめた)。
+    do {
+      _ = try await runSpeech(
+        installation.whisperExecutable,
+        [
+          "-m", installation.whisperModelFile.path, "-l", "ja", "-mc", "0", "-ojf", "-f",
+          whole.path,
+        ],
+        timeout: timeout)
+    } catch {
+      throw RecognitionFailure(error, label: "whisper")
+    }
+    do {
+      return try whisperTokens(
+        Data(contentsOf: whole.appendingPathExtension("json")), duration: duration)
+    } catch {
+      throw RecognitionFailure(unparsableOutputOf: "whisper")
+    }
+  }
 }
 
 /// 話者分離が失敗した理由。`step` は `diarize`・`parse`、`type` はログの `error.type`。
@@ -254,6 +322,9 @@ struct TranscriptionSetting {
 
   var current: URL? { queue.first }
 
+  /// 今の設定のエンジンを写した取得先。設定は待ち行列に入れた後にも変わりうるので、使うたびに作る。
+  private var selected: SpeechInstallation { installation.selecting(setting.engine) }
+
   /// 録音が保存されたとき。自動がオンなら文字起こしを待ち行列に入れる。
   func recordingSaved(_ meeting: URL) {
     guard setting.autoTranscribe else {
@@ -276,7 +347,7 @@ struct TranscriptionSetting {
 
   /// ランタイムとモデルの取得・動作確認の後。取得済みなら未取得で待たせた録音を文字起こしする。
   func resumeAfterSetup() {
-    guard installation.isInstalled else { return }
+    guard selected.isInstalled else { return }
     let waiting = awaitingSetup
     awaitingSetup = []
     waiting.forEach(enqueue)
@@ -289,12 +360,9 @@ struct TranscriptionSetting {
       )
       return
     }
-    guard installation.isInstalled else {
-      if !awaitingSetup.contains(meeting) { awaitingSetup.append(meeting) }
-      logger.info(
-        "transcription deferred reason=not_installed folder.name=\(meeting.lastPathComponent, privacy: .public)"
-      )
-      notify(.setupRequired(meeting: meeting.lastPathComponent))
+    let job = selected
+    guard job.isInstalled else {
+      awaitSetup(meeting, engine: job.engine)
       return
     }
     awaitingSetup.removeAll { $0 == meeting }
@@ -302,14 +370,30 @@ struct TranscriptionSetting {
     if queue.count == 1 { Task { await drain() } }
   }
 
+  /// 選んだエンジンに要るファイルが揃うまで `meeting` を待たせ、取得を促す。
+  private func awaitSetup(_ meeting: URL, engine: TranscriptionEngine) {
+    if !awaitingSetup.contains(meeting) { awaitingSetup.append(meeting) }
+    logger.info(
+      "transcription deferred reason=not_installed engine=\(engine.rawValue, privacy: .public) folder.name=\(meeting.lastPathComponent, privacy: .public)"
+    )
+    notify(.setupRequired(meeting: meeting.lastPathComponent))
+  }
+
   private func drain() async {
     while let meeting = queue.first {
-      do {
-        let name = meeting.lastPathComponent
-        let skip = try await transcribe(meeting, installation, setting.separateSpeakers)
-        notify(skip.map { .finishedWithoutSpeakers($0, meeting: name) } ?? .finished(meeting: name))
-      } catch {
-        notify(.failed(error, meeting: meeting.lastPathComponent))
+      let name = meeting.lastPathComponent
+      // 待ち行列に入れた後に、要るファイルの無いエンジンへ替えられうる。
+      let job = selected
+      if job.isInstalled {
+        do {
+          let skip = try await transcribe(meeting, job, setting.separateSpeakers)
+          notify(
+            skip.map { .finishedWithoutSpeakers($0, meeting: name) } ?? .finished(meeting: name))
+        } catch {
+          notify(.failed(error, meeting: name))
+        }
+      } else {
+        awaitSetup(meeting, engine: job.engine)
       }
       queue.removeFirst()
     }

@@ -86,7 +86,7 @@ func speakerSegments(_ stdout: Data, file: URL, duration: TimeInterval) throws -
 }
 
 /// 段落を 1 行に保つため、改行・CR・ESC などの制御文字(Cc)と行・段落の区切り(U+2028・U+2029)を除く。
-private func lineSafe(_ text: String) -> String {
+func lineSafe(_ text: String) -> String {
   String(
     String.UnicodeScalarView(
       text.unicodeScalars.filter {
