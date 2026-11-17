@@ -19,6 +19,8 @@ jobs:
           persist-credentials: false
       - run: swift --version
       - run: scripts/test.sh
+      - run: scripts/bundle.sh
+      - run: dist/Amanuensis.app/Contents/MacOS/whisper-cli --help > /dev/null
 
   betterleaks:
     runs-on: ubuntu-latest

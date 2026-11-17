@@ -14,7 +14,7 @@ func showSettings() {
         defer: false)
       window.title = "amanuensis の設定"
       window.isReleasedWhenClosed = false
-      window.setContentSize(NSSize(width: 520, height: 400))
+      window.setContentSize(NSSize(width: 520, height: 480))
       settingsWindow = window
       return window
     }()
@@ -40,6 +40,7 @@ private struct SettingsView: View {
         MeetingDetectionSettingsView(setting: MeetingDetectionSetting())
       }
       Section("音声認識") {
+        EngineSettingsView(setup: speechSetup) { transcriber.resumeAfterSetup() }
         SpeechSettingsView(state: speechSetup.state, installation: speechSetup.installation) {
           action in
           Task {

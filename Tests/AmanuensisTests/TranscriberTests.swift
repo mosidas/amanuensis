@@ -525,3 +525,73 @@ private let noticeRows = [
     #expect(MenuContent.transcriptionEntries(for: nil) == [])
   }
 }
+
+extension TranscriberTests {
+  @Test func whisperWithoutModelWaitsForSetupThenTranscribesOnceWithWhisper() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    let setting = TranscriptionSetting(
+      defaults: try #require(UserDefaults(suiteName: harness.suiteName)))
+    setting.setEngine(.whisper)
+    var engines: [TranscriptionEngine] = []
+    var notices: [TranscriptionNotice] = []
+    let transcriber = Transcriber(
+      installation: harness.installation, setting: setting,
+      transcribe: { _, installation, _ async throws(TranscriptionFailure) in
+        engines.append(installation.engine)
+        return nil
+      },
+      notify: { notices.append($0) })
+
+    transcriber.recordingSaved(first)
+    try await Task.sleep(for: .milliseconds(100))
+    transcriber.resumeAfterSetup()
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(engines.isEmpty, "ランタイムと Haas があっても Whisper のモデルが無ければ始めない")
+    #expect(notices == [.setupRequired(meeting: "2026-11-06_101500")])
+
+    try Data().write(to: harness.installation.whisperModelFile)
+    transcriber.resumeAfterSetup()
+    try await waitUntil { engines.count == 1 && transcriber.current == nil }
+    transcriber.resumeAfterSetup()
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(engines == [.whisper], "取得後に Whisper で 1 回だけ文字起こしする")
+    #expect(
+      notices == [
+        .setupRequired(meeting: "2026-11-06_101500"), .finished(meeting: "2026-11-06_101500"),
+      ])
+  }
+
+  @Test func switchingToWhisperWithoutModelDefersQueuedRecording() async throws {
+    let harness = Harness()
+    defer { harness.remove() }
+    try harness.install()
+    harness.holds = true
+    let transcriber = try harness.transcriber()
+
+    transcriber.recordingSaved(first)
+    try await waitUntil { harness.calls.count == 1 }
+    transcriber.recordingSaved(second)
+    TranscriptionSetting(defaults: try #require(UserDefaults(suiteName: harness.suiteName)))
+      .setEngine(.whisper)
+    harness.release()
+    try await waitUntil { transcriber.queue.isEmpty }
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.calls == [first], "待ち行列に入れた後に Whisper へ替えたら 2 件目は始めない")
+    #expect(
+      harness.notices == [
+        .finished(meeting: "2026-11-06_101500"), .setupRequired(meeting: "2026-11-06_113000"),
+      ])
+
+    harness.holds = false
+    try Data().write(to: harness.installation.whisperModelFile)
+    transcriber.resumeAfterSetup()
+    try await waitUntil { harness.calls.count == 2 && transcriber.current == nil }
+
+    #expect(harness.calls == [first, second], "取得後に 2 件目を 1 回だけ文字起こしする")
+  }
+}

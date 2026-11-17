@@ -27,20 +27,27 @@ enum SpeechSettingsText {
   static let logOpenFailed = SpeechSettingsDisplay(
     title: "ログを開けませんでした", body: "フォルダーのアクセス権を確かめてください。", isFailure: true, primary: nil)
 
-  /// `state` のときに出す表示。`folder` はランタイムとモデルの保存先。
-  static func display(for state: SetupState, folder: URL) -> SpeechSettingsDisplay {
+  /// `state` のときに出す表示。`folder` はランタイムとモデルの保存先、`engine` は本文を起こすエンジン。
+  static func display(for state: SetupState, folder: URL, engine: TranscriptionEngine = .haas)
+    -> SpeechSettingsDisplay
+  {
     let retryDownload = SpeechButton(label: "再試行", action: .download)
     return switch state {
     case .notInstalled:
       .init(
         title: "音声認識モデルは未取得です",
         body:
-          "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount + RemoteFile.nemotronDiarization.byteCount)) です。",
+          "ダウンロードの容量は \(bytes(RemoteFile.speechRuntime.byteCount + RemoteFile.haasModel.byteCount + RemoteFile.nemotronDiarization.byteCount + (engine == .whisper ? RemoteFile.whisperLargeV3Turbo.byteCount : 0))) です。",
         isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
     case .diarizationModelMissing:
       .init(
         title: "話者分離のモデルは未取得です",
         body: "話者を分けるときに使います。ダウンロードの容量は \(bytes(RemoteFile.nemotronDiarization.byteCount)) です。",
+        isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
+    case .whisperModelMissing(let downloadBytes):
+      .init(
+        title: "Whisper のモデルは未取得です",
+        body: "本文を Whisper で起こすときに使います。ダウンロードの容量は \(bytes(downloadBytes)) です。",
         isFailure: false, primary: SpeechButton(label: "ダウンロード", action: .download))
     case .downloading(let received, let total):
       .init(
@@ -119,7 +126,8 @@ struct SpeechSettingsView: View {
   @State private var logOpenFailed = false
 
   var body: some View {
-    let display = SpeechSettingsText.display(for: state, folder: installation.directory)
+    let display = SpeechSettingsText.display(
+      for: state, folder: installation.directory, engine: installation.engine)
     VStack(alignment: .leading, spacing: 8) {
       Message(title: display.title, detail: display.body, isFailure: display.isFailure)
       if case .downloading(let received, let total) = state {

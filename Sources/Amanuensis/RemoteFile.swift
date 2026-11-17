@@ -42,4 +42,16 @@ extension RemoteFile {
     byteCount: 106_179_488,
     sha256: "336df6350dce2ea5ff06aa6e2b249d331a859ced13305fbb45c44bdb3c0abe20",
     fileName: "Nemotron-3-Diarization-99M-Q8_0.gguf")
+
+  /// whisper.cpp の Whisper large-v3-turbo の q8_0。
+  /// Hugging Face の main は書き換えられるため、URL はコミット 5359861 に固定する。
+  /// 大きさと sha256 は、この URL に Hugging Face が返す X-Linked-Size と X-Linked-ETag(LFS の sha256)。
+  static let whisperLargeV3Turbo = RemoteFile(
+    url: URL(
+      string:
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q8_0.bin"
+    )!,
+    byteCount: 874_188_075,
+    sha256: "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+    fileName: "ggml-large-v3-turbo-q8_0.bin")
 }

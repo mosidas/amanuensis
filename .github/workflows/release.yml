@@ -43,7 +43,8 @@ jobs:
       - name: Verify app
         shell: bash
         run: |
-          codesign --verify --strict dist/Amanuensis.app || { echo "::error title=成果物の検証::署名の検証に失敗した"; exit 1; }
+          codesign --verify --strict --deep dist/Amanuensis.app || { echo "::error title=成果物の検証::署名の検証に失敗した"; exit 1; }
+          dist/Amanuensis.app/Contents/MacOS/whisper-cli --help > /dev/null || { echo "::error title=成果物の検証::同梱の whisper-cli を起動できない"; exit 1; }
           actual="$(plutil -extract CFBundleShortVersionString raw dist/Amanuensis.app/Contents/Info.plist)"
           if [[ "$actual" != "${GITHUB_REF_NAME#v}" ]]; then
             echo "::error title=成果物の検証::Info.plist のバージョン $actual がタグ $GITHUB_REF_NAME と一致しない"
