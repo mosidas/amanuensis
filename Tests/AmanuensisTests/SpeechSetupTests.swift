@@ -787,7 +787,10 @@ func realDownloadInstallsWhisperModel() async throws {
   let setting = TranscriptionSetting(defaults: try #require(UserDefaults(suiteName: suiteName)))
   setting.setEngine(.whisper)
   let setup = SpeechSetup(selfCheck: { _ in .passed }, setting: setting)
-  await setup.download()
+  try await waitUntil { !setup.isBusy }
+  if setup.state != .checked(.passed) {
+    await setup.download()
+  }
 
   let installation = SpeechInstallation.standard.selecting(.whisper)
   #expect(setup.state == .checked(.passed))
