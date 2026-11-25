@@ -495,9 +495,12 @@ private final class StateHistory {
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["AMANUENSIS_E2E"] == "1"))
-func realDownloadInstallsRuntimeAndModel() async {
+func realDownloadInstallsRuntimeAndModel() async throws {
   let setup = SpeechSetup(selfCheck: { _ in .passed })
-  await setup.download()
+  try await waitUntil { !setup.isBusy }
+  if setup.state != .checked(.passed) {
+    await setup.download()
+  }
 
   let installation = SpeechInstallation.standard
   #expect(setup.state == .checked(.passed))
