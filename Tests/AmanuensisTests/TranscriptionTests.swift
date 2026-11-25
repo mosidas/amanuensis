@@ -743,7 +743,7 @@ func speakerLabelsFollowVoiceWithBundledModels() async throws {
   #expect(sameVoice.map(\.speaker) == [1, 1, 1], "同じ声の 3 回は同じ話者")
 }
 
-@Test func whisperTokensDropSpecialTokensAndUseSegmentTimeWithoutWordTime() throws {
+@Test func whisperLinesDropSpecialTokensAndUseSegmentTimeWithoutWordTime() throws {
   let output = Data(
     #"""
     {"transcription":[{"offsets":{"from":1000,"to":2500},"text":"こんにちは","tokens":[
@@ -756,9 +756,28 @@ func speakerLabelsFollowVoiceWithBundledModels() async throws {
     """#.utf8)
 
   #expect(
-    try whisperTokens(output, duration: 2.5) == [
-      token(1.0, 1.4, "こん"), token(1.0, 2.5, "にちは"), token(2.0, 2.5, "赤[31m"),
+    try whisperLines(output, duration: 2.5) == [
+      WhisperLine(
+        start: 1.0, end: 2.5,
+        tokens: [token(1.0, 1.4, "こん"), token(1.0, 2.5, "にちは"), token(2.0, 2.5, "赤[31m")])
     ], "末尾 2.5 秒は録音の長さちょうどなのでそのまま")
+}
+
+@Test func whisperLinesSkipSegmentsWithoutWords() throws {
+  let output = Data(
+    #"""
+    {"transcription":[
+      {"offsets":{"from":0,"to":500},"text":"","tokens":[
+        {"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365},
+        {"text":"\n","offsets":{"from":0,"to":500},"id":1000}]},
+      {"offsets":{"from":1000,"to":1500},"text":"はい","tokens":[
+        {"text":"はい","offsets":{"from":1000,"to":1500},"id":1001}]}]}
+    """#.utf8)
+
+  #expect(
+    try whisperLines(output, duration: 2) == [
+      WhisperLine(start: 1.0, end: 1.5, tokens: [token(1.0, 1.5, "はい")])
+    ])
 }
 
 /// `from`・`to`(ミリ秒)の語「あ」を 1 つ持つ whisper-cli の JSON。
@@ -788,12 +807,22 @@ private func whisperWord(from: Int, to: Int) -> Data {
         #"{"transcription":[{"offsets":{"from":0,"to":40001},"text":"あ","tokens":[{"text":"あ","id":1000}]}]}"#
           .utf8), .timeOutOfRange
     ),
+    (
+      Data(
+        #"{"transcription":[{"offsets":{"from":0,"to":40001},"text":"あ","tokens":[{"text":"あ","offsets":{"from":0,"to":500},"id":1000}]}]}"#
+          .utf8), .timeOutOfRange
+    ),
+    (
+      Data(
+        #"{"transcription":[{"offsets":{"from":-1,"to":500},"text":"","tokens":[{"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365}]}]}"#
+          .utf8), .timeOutOfRange
+    ),
   ] as [(Data, WhisperOutputError)])
-func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputError) {
-  #expect(throws: reason) { try whisperTokens(output, duration: 10) }
+func whisperLinesRejectUnexpectedOutput(output: Data, reason: WhisperOutputError) {
+  #expect(throws: reason) { try whisperLines(output, duration: 10) }
 }
 
-@Test func whisperTokensClampTimesPastRecordingEndWithinLastWindow() throws {
+@Test func whisperLinesClampTimesPastRecordingEndWithinLastWindow() throws {
   // 実際の whisper-cli の出力の形: 最後の 30 秒の窓の無音に出た段落は、録音の長さを超えて窓の終わりまで伸びる。
   let output = Data(
     #"""
@@ -805,12 +834,16 @@ func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputErro
     """#.utf8)
 
   #expect(
-    try whisperTokens(output, duration: 10) == [
-      token(8.0, 9.5, "ご視聴"), token(9.54, 10.0, "ありがとう"), token(10.0, 10.0, "ございました"),
-    ], "録音の長さ + 30 秒ちょうどまで受け付け、時刻を録音の長さに収める")
+    try whisperLines(output, duration: 10) == [
+      WhisperLine(
+        start: 8.0, end: 37.16,
+        tokens: [
+          token(8.0, 9.5, "ご視聴"), token(9.54, 10.0, "ありがとう"), token(10.0, 10.0, "ございました"),
+        ])
+    ], "録音の長さ + 30 秒ちょうどまで受け付け、語の時刻だけを録音の長さに収める")
 }
 
-@Test func whisperTokensKeepTextTokenIDsBelowEndOfText() throws {
+@Test func whisperLinesKeepTextTokenIDsBelowEndOfText() throws {
   let output = Data(
     #"""
     {"transcription":[{"offsets":{"from":0,"to":1000},"text":"残る","tokens":[
@@ -818,7 +851,159 @@ func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputErro
       {"text":"<|endoftext|>","offsets":{"from":500,"to":1000},"id":50257}]}]}
     """#.utf8)
 
-  #expect(try whisperTokens(output, duration: 1) == [token(0, 0.5, "残る")])
+  #expect(
+    try whisperLines(output, duration: 1) == [
+      WhisperLine(start: 0, end: 1.0, tokens: [token(0, 0.5, "残る")])
+    ])
+}
+
+/// `start`〜`end` 秒の Whisper の段落。語は段落と同じ時刻の 1 個。
+private func line(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -> WhisperLine {
+  WhisperLine(start: start, end: end, tokens: [token(start, end, text)])
+}
+
+@Test func hallucinationOfKnownPhraseIsReplacedByHaasWordsInItsRange() {
+  let lines = [
+    line(1.0, 1.5, "こんにちは"), line(4.0, 6.0, "ご視聴 ありがとうございました!"), line(8.0, 8.5, "さようなら"),
+  ]
+  let haas = [token(1.0, 1.5, "こんにちわ"), token(4.2, 4.8, "はい"), token(8.0, 8.5, "さよなら")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(found == [Hallucination(lines: 1..<2, start: 4.0, end: 6.0)])
+  #expect(
+    replacing(found, in: lines, with: haas) == [
+      token(1.0, 1.5, "こんにちは"), token(4.2, 4.8, "はい"), token(8.0, 8.5, "さようなら"),
+    ], "幻聴の段落だけを、その範囲の Haas の語に替える")
+}
+
+@Test func hallucinationOfOdashoAtLineStartIsReplaced() {
+  let lines = [line(10.0, 12.0, "おだしょーそれでは始めます")]
+  let haas = [token(10.2, 10.8, "それでは"), token(11.0, 11.6, "始めます")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(found == [Hallucination(lines: 0..<1, start: 10.0, end: 12.0)])
+  #expect(replacing(found, in: lines, with: haas) == haas)
+}
+
+@Test func hallucinationsOfAdjacentLinesFormOneRange() {
+  let lines = [
+    line(0.0, 1.0, "ご視聴ありがとうございました"), line(1.0, 2.0, "おだしょー"), line(3.0, 4.0, "本題です"),
+    line(5.0, 6.0, "ご視聴ありがとうございました"),
+  ]
+  let haas = [token(0.2, 0.6, "えー"), token(3.0, 4.0, "本題"), token(5.2, 5.8, "以上")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(
+    found == [
+      Hallucination(lines: 0..<2, start: 0.0, end: 2.0),
+      Hallucination(lines: 3..<4, start: 5.0, end: 6.0),
+    ])
+  #expect(
+    replacing(found, in: lines, with: haas) == [
+      token(0.2, 0.6, "えー"), token(3.0, 4.0, "本題です"), token(5.2, 5.8, "以上"),
+    ])
+}
+
+@Test func hallucinationOfSentenceRepeatedThreeTimesInARow() {
+  let three = [
+    line(1.0, 2.0, "ありがとうございます。"), line(2.5, 3.5, "ありがとうございます。"),
+    line(4.0, 5.0, "ありがとうございます。"),
+  ]
+
+  #expect(hallucinations(in: three) == [Hallucination(lines: 0..<3, start: 1.0, end: 5.0)])
+  #expect(
+    hallucinations(in: [line(0.0, 0.5, "では。")] + three) == [
+      Hallucination(lines: 1..<4, start: 1.0, end: 5.0)
+    ], "反復の前の段落は含めない")
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "はい。はい。はい。")]) == [
+      Hallucination(lines: 0..<1, start: 1.0, end: 2.0)
+    ], "1 段落の中の 3 回")
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "はい。"), line(2.5, 3.5, "はい!はい")]) == [
+      Hallucination(lines: 0..<2, start: 1.0, end: 3.5)
+    ], "段落をまたいで続く 3 回")
+  #expect(hallucinations(in: Array(three.prefix(2))) == [], "2 回は相づちで普通に起きる")
+  #expect(hallucinations(in: [line(1.0, 2.0, "はい。はい。")]) == [])
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "。"), line(2.0, 3.0, "!"), line(3.0, 4.0, "。 。")]) == [],
+    "約物だけの文は数えない")
+}
+
+@Test func hallucinationsAreNotFoundInFixtureTranscript() {
+  // whisper-cli(-l ja -mc 0)が transcription-3x.wav に出した段落の本文(3 回目は約物なしで 7 段落に割れる)。
+  let texts = [
+    "これは、アマニュエンシスの動作確認に使う音声です。", "会議の録音を文字起こしして、議事録の下書きを作ります。", "今日の議題は3つあります。",
+    "1つ目は来月の予定、2つ目は予算の見直し、3つ目は新しい機能の検討です。", "それでは、始めましょう。",
+    "これは、アマニュエンシスの動作確認に使う音声です。", "会議の録音を文字起こしして、議事録の下書きを作ります。", "今日の議題は3つあります。",
+    "1つ目は来月の予定、2つ目は予算の見直し、3つ目は新しい機能の検討です。", "それでは、始めましょう。",
+    "これはアマニュエンシスの動作確認に使う音声です", "会議の録音を文字起こしして議事録の下書きを作ります", "今日の議題は3つあります",
+    "1つ目は来月の予定", "2つ目は予算の見直し", "3つ目は新しい機能の検討です", "それでは始めましょう",
+  ]
+  let lines = texts.enumerated().map {
+    line(Double($0.offset), Double($0.offset) + 0.9, $0.element)
+  }
+
+  #expect(hallucinations(in: lines) == [])
+}
+
+@Test func hallucinationPastRecordingEndDoesNotJoinLastParagraph() throws {
+  let output = Data(
+    #"""
+    {"transcription":[
+      {"offsets":{"from":8000,"to":9500},"text":"実際の語","tokens":[
+        {"text":"実際の語","offsets":{"from":8000,"to":9500},"id":1000}]},
+      {"offsets":{"from":12000,"to":13000},"text":"ご視聴ありがとうございました","tokens":[
+        {"text":"ご視聴ありがとうございました","offsets":{"from":12000,"to":13000},"id":1001}]}]}
+    """#.utf8)
+  let lines = try whisperLines(output, duration: 10)
+
+  let tokens = replacing(hallucinations(in: lines), in: lines, with: [])
+
+  #expect(tokens == [token(8.0, 9.5, "実際の語")])
+  #expect(paragraphs(tokens) == [TranscriptParagraph(start: 8.0, text: "実際の語")])
+}
+
+@Test func hallucinationInSilentRecordingLeavesNoUtterance() throws {
+  // whisper-cli(-l ja -mc 0)が 3 秒の無音に出した JSON の段落。
+  let output = Data(
+    #"""
+    {"transcription":[{"offsets":{"from":0,"to":29980},"text":"ご視聴ありがとうございました","tokens":[
+      {"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365},
+      {"text":"ご","offsets":{"from":0,"to":1870},"id":9991},
+      {"text":"視","offsets":{"from":1870,"to":2990},"id":27333},
+      {"text":"聴","offsets":{"from":2990,"to":2990},"id":8171},
+      {"text":"ありがとうございました","offsets":{"from":2990,"to":2990},"id":38538},
+      {"text":"[_TT_1499]","offsets":{"from":29980,"to":29980},"id":51864}]}]}
+    """#.utf8)
+  let lines = try whisperLines(output, duration: 3)
+
+  let tokens = replacing(hallucinations(in: lines), in: lines, with: [])
+
+  #expect(tokens == [])
+  let transcript = Transcript(
+    meetingName: "2026-11-25_000000", duration: 3, model: "ggml-large-v3-turbo-q8_0.bin",
+    paragraphs: paragraphs(tokens))
+  #expect(transcript.markdown.hasSuffix("\n\n発話はありませんでした。\n"))
+}
+
+@Test func replacingTakesOnlyHaasWordsWhoseMidpointIsInRange() {
+  let lines = [line(4.0, 6.0, "ご視聴ありがとうございました")]
+  let haas = [
+    token(3.0, 4.98, "前"),  // 中点 3.99
+    token(3.5, 4.5, "始"),  // 中点 4.0
+    token(4.6, 5.0, "中"),
+    token(5.5, 6.5, "終"),  // 中点 6.0
+    token(5.04, 7.0, "後"),  // 中点 6.02
+  ]
+
+  #expect(
+    replacing(hallucinations(in: lines), in: lines, with: haas) == [
+      token(3.5, 4.5, "始"), token(4.6, 5.0, "中"), token(5.5, 6.5, "終"),
+    ], "中点が範囲の両端ちょうどの語は入り、外の語は入らない")
 }
 
 /// 引数を `whisper-args` に書き、`-f` の次の WAVE が無ければ 9 で終わる偽の whisper-cli の前置き。
@@ -1071,4 +1256,14 @@ private func transcribeWithTrailingSilence(
     }
     return (Int(match.1)! * 3600 + Int(match.2)! * 60 + Int(match.3)!, String(match.4))
   }
+}
+
+@Test func replacingTakesNoHaasWordsForLinesOutOfTimeOrder() {
+  let lines = [line(5.0, 6.0, "ご視聴ありがとうございました"), line(1.0, 2.0, "おだしょー")]
+  let found = hallucinations(in: lines)
+
+  #expect(found == [Hallucination(lines: 0..<2, start: 5.0, end: 2.0)])
+  #expect(
+    replacing(found, in: lines, with: [token(1.2, 1.6, "はい"), token(5.2, 5.6, "いいえ")]) == [],
+    "始まりが終わりより後の区間には Haas の語を入れず、止まらない")
 }

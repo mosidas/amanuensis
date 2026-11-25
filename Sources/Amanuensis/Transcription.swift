@@ -202,7 +202,7 @@ private func recognize(
       throw RecognitionFailure(unparsableOutputOf: "whisper", reason: .missingJSON)
     }
     do {
-      return try whisperTokens(output, duration: duration)
+      return try whisperLines(output, duration: duration).flatMap(\.tokens)
     } catch {
       throw RecognitionFailure(unparsableOutputOf: "whisper", reason: error)
     }
