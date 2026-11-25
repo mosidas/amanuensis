@@ -15,7 +15,7 @@ enum SpeakerSkip: Equatable {
 }
 
 /// 会議フォルダーの `recording.caf` を文字起こしし、同じフォルダーの `transcript.md` に書く(既にあれば置き換える)。
-/// 録音は消さず動かさない。認識と話者分離の失敗は `transcription.log` に 1 行追記する。
+/// 録音は消さず動かさない。認識と話者分離の失敗、Whisper の幻聴の置き換えとその起こし直しの失敗は `transcription.log` に 1 行追記する。
 /// `separateSpeakers` なら段落に話者のラベルを付ける。付けられなければラベル無しで書き、その理由を返す。
 @discardableResult
 func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers: Bool)
@@ -75,12 +75,28 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
   // (runBundledSelfCheck と同じ)、録音の 0.5 倍はその 60 倍以上の余裕。
   // shortcut: 120 秒 + 録音の 0.5 倍, Metal の無い環境で時間切れの報告があれば実測から決め直す
   // shortcut: Whisper も 120 秒 + 録音の 0.5 倍(試作: 75 秒の録音を冷えた 1 回目 19.6 秒、2 回目以降 6 秒前後), Whisper の初回の読み込みを含む実測で決め直す
+  // shortcut: 幻聴の起こし直しの Haas も同じ上限を別に持つ(最悪の合計は 2 倍), 合計の待ちが長すぎる報告があれば残り時間を渡す
   let timeout: Duration = .seconds(120) + .seconds(duration * 0.5)
   var tokens: [RecognizedToken] = []
+  var replacedHallucinations = 0
   if !chunks.isEmpty {
     do throws(RecognitionFailure) {
-      tokens = try await recognize(
+      let outcome: HallucinationOutcome
+      (tokens, outcome) = try await recognize(
         chunks, whole: whole, duration: duration, installation: installation, timeout: timeout)
+      switch outcome {
+      case .none:
+        break
+      case .replaced(let count):
+        replacedHallucinations = count
+        appendLog("hallucinations replaced count=\(count)", to: log)
+      case .kept(let count, let error):
+        let status = error.status.map(String.init) ?? "none"
+        logger.warning(
+          "transcription hallucinations failed step=\(error.step, privacy: .public) error.type=\(error.type, privacy: .public) app.error.origin=system status=\(status, privacy: .public) count=\(count, privacy: .public) folder.name=\(name, privacy: .public) stderr=\(error.stderr, privacy: .private)"
+        )
+        appendLog(error.logLine, to: log)
+      }
     } catch {
       appendLog(error.logLine, to: log)
       throw failed(
@@ -122,7 +138,7 @@ func transcribe(meeting: URL, installation: SpeechInstallation, separateSpeakers
     }
   let speakerCount = Set(transcript.paragraphs.compactMap(\.speaker)).count
   logger.info(
-    "transcription finished folder.name=\(name, privacy: .public) engine=\(engine, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public) speakers.status=\(speakersStatus, privacy: .public) speakers.count=\(speakerCount, privacy: .public)"
+    "transcription finished folder.name=\(name, privacy: .public) engine=\(engine, privacy: .public) audio_s=\(duration, format: .fixed(precision: 1), privacy: .public) elapsed_s=\(elapsed, format: .fixed(precision: 1), privacy: .public) chunks=\(chunks.count, privacy: .public) paragraphs=\(transcript.paragraphs.count, privacy: .public) speakers.status=\(speakersStatus, privacy: .public) speakers.count=\(speakerCount, privacy: .public) hallucinations.replaced=\(replacedHallucinations, privacy: .public)"
   )
   return skip
 }
@@ -159,28 +175,28 @@ private struct RecognitionFailure: Error {
   }
 }
 
+/// Whisper の幻聴の扱いの結果。`count` は幻聴の区間の数。
+private enum HallucinationOutcome {
+  case none
+  /// 区間を Haas の語に置き換えた(録音の外の区間は Haas を起動せずに除いた)。
+  case replaced(count: Int)
+  /// Haas で起こし直せず、Whisper の行を残した。
+  case kept(count: Int, RecognitionFailure)
+}
+
 /// 選んだエンジンで本文を語の列に起こす。Haas は区間 `chunks` を、Whisper は録音全体の WAVE `whole` を読む。
+/// Whisper の幻聴の区間は、その区間に重なる `chunks` を Haas で起こし直した語に置き換える。
 private func recognize(
   _ chunks: [AudioChunk], whole: URL, duration: TimeInterval, installation: SpeechInstallation,
   timeout: Duration
-) async throws(RecognitionFailure) -> [RecognizedToken] {
+) async throws(RecognitionFailure) -> (
+  tokens: [RecognizedToken], hallucinations: HallucinationOutcome
+) {
   switch installation.engine {
   case .haas:
-    let stdout: Data
-    do {
-      stdout = try await runSpeech(
-        installation.executable,
-        ["asr", installation.modelFile.path, "--timestamps", "--format", "json"]
-          + chunks.map(\.file.path),
-        timeout: timeout)
-    } catch {
-      throw RecognitionFailure(error, label: "transcription")
-    }
-    do {
-      return try recognizedTokens(stdout, chunks: chunks)
-    } catch {
-      throw RecognitionFailure(unparsableOutputOf: "transcription")
-    }
+    let tokens = try await haasTokens(
+      chunks, installation: installation, timeout: timeout, label: "transcription")
+    return (tokens, .none)
   case .whisper:
     // -mc 0: 前の文脈を渡さず、反復の幻聴を減らす(mlx-whisper の --condition-on-previous-text False に当たる)。
     // 区間でなく全体を渡す: 区間が無音で始まると、Whisper はその区間の最初の段落を 0 秒に置く(試作で確かめた)。
@@ -201,11 +217,49 @@ private func recognize(
     } catch {
       throw RecognitionFailure(unparsableOutputOf: "whisper", reason: .missingJSON)
     }
+    let lines: [WhisperLine]
     do {
-      return try whisperLines(output, duration: duration).flatMap(\.tokens)
+      lines = try whisperLines(output, duration: duration)
     } catch {
       throw RecognitionFailure(unparsableOutputOf: "whisper", reason: error)
     }
+    let found = hallucinations(in: lines)
+    guard !found.isEmpty else { return (lines.flatMap(\.tokens), .none) }
+    let ends = chunks.dropFirst().map(\.offset) + [duration]
+    let overlapping = zip(chunks, ends).filter { chunk, end in
+      found.contains { chunk.offset <= $0.end && $0.start < end }
+    }.map(\.0)
+    var haas: [RecognizedToken] = []
+    if !overlapping.isEmpty {
+      do {
+        haas = try await haasTokens(
+          overlapping, installation: installation, timeout: timeout, label: "hallucinations")
+      } catch {
+        return (lines.flatMap(\.tokens), .kept(count: found.count, error))
+      }
+    }
+    return (replacing(found, in: lines, with: haas), .replaced(count: found.count))
+  }
+}
+
+/// 区間 `chunks` を Haas(`speech asr`)で語の列に起こす。`label` は `transcription.log` の行の先頭。
+private func haasTokens(
+  _ chunks: [AudioChunk], installation: SpeechInstallation, timeout: Duration, label: String
+) async throws(RecognitionFailure) -> [RecognizedToken] {
+  let stdout: Data
+  do {
+    stdout = try await runSpeech(
+      installation.executable,
+      ["asr", installation.modelFile.path, "--timestamps", "--format", "json"]
+        + chunks.map(\.file.path),
+      timeout: timeout)
+  } catch {
+    throw RecognitionFailure(error, label: label)
+  }
+  do {
+    return try recognizedTokens(stdout, chunks: chunks)
+  } catch {
+    throw RecognitionFailure(unparsableOutputOf: label)
   }
 }
 
