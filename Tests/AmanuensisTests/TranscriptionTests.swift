@@ -463,15 +463,16 @@ private func log(of meeting: URL) throws -> String {
   try String(contentsOf: meeting.appending(path: "transcription.log"), encoding: .utf8)
 }
 
-/// asr には `twoWordsPerChunk` で答え、diarize には引数を `runtime/diarize-args` に書いて `diarize` を実行する偽の speech。
+/// asr には `asr`(既定は `twoWordsPerChunk`)で答え、diarize には引数を `runtime/diarize-args` に書いて `diarize` を実行する偽の speech。
 /// `diarize` の `$5` は全体の WAVE のパス。
-private func fakeInstallation(diarize: String, withModel: Bool = true) throws -> SpeechInstallation
-{
+private func fakeInstallation(
+  diarize: String, withModel: Bool = true, asr: String = twoWordsPerChunk
+) throws -> SpeechInstallation {
   let installation = try fakeInstallation(
     """
     case "$1" in
     asr)
-    \(twoWordsPerChunk);;
+    \(asr);;
     diarize)
     printf '%s\\n' "$@" > "$(dirname "$0")/diarize-args"
     \(diarize);;
@@ -657,11 +658,12 @@ private let sampleText = URL(filePath: #filePath)
   .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
   .appending(path: "Resources/SelfCheck/sample.txt")
 
-/// フィクスチャを右チャンネル(左は 0)に置いた録音を本物の speech で文字起こしし、段落の時刻(秒)・話者・本文を返す。
+/// フィクスチャを右チャンネル(左は 0)に置いた録音を本物の speech で文字起こしし、段落の時刻(秒)・話者・本文と、
+/// `transcription.log` の中身(無ければ nil)を返す。
 private func transcribeFixture(
   _ name: String, separateSpeakers: Bool, installation: SpeechInstallation = .standard
 ) async throws -> (
-  header: [Substring], paragraphs: [(seconds: Int, speaker: Int?, text: String)]
+  header: [Substring], paragraphs: [(seconds: Int, speaker: Int?, text: String)], log: String?
 ) {
   let (values, rate, _) = try samples(of: fixtures.appending(path: name))
   let meeting = try temporaryDirectory("2026-11-06_101500")
@@ -688,7 +690,7 @@ private func transcribeFixture(
       String(match.5)
     )
   }
-  return (Array(lines.prefix(4)), paragraphs)
+  return (Array(lines.prefix(4)), paragraphs, try? log(of: meeting))
 }
 
 private let e2eEnabled =
@@ -699,7 +701,7 @@ private let e2eEnabled =
 func transcribeFixtureWithBundledModel(name: String) async throws {
   let reference = try String(contentsOf: sampleText, encoding: .utf8)
 
-  let (header, paragraphs) = try await transcribeFixture(name, separateSpeakers: false)
+  let (header, paragraphs, _) = try await transcribeFixture(name, separateSpeakers: false)
 
   #expect(
     header == [
@@ -722,7 +724,7 @@ func transcribeFixtureWithBundledModel(name: String) async throws {
 func speakerLabelsFollowVoiceWithBundledModels() async throws {
   let reference = try String(contentsOf: sampleText, encoding: .utf8)
 
-  let (_, labeled) = try await transcribeFixture(
+  let (_, labeled, _) = try await transcribeFixture(
     "transcription-3x-two-voices.wav", separateSpeakers: true)
 
   #expect(labeled.map(\.speaker) == [1, 2, 1], "2 回目の別の声だけが話者 2")
@@ -734,16 +736,17 @@ func speakerLabelsFollowVoiceWithBundledModels() async throws {
       abs(Double(paragraph.seconds) - start) <= 2, "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
   }
 
-  let (_, unlabeled) = try await transcribeFixture(
+  let (_, unlabeled, _) = try await transcribeFixture(
     "transcription-3x-two-voices.wav", separateSpeakers: false)
   #expect(unlabeled.count == 3)
   #expect(unlabeled.allSatisfy { $0.speaker == nil }, "オフでは話者のラベルが無い")
 
-  let (_, sameVoice) = try await transcribeFixture("transcription-3x.wav", separateSpeakers: true)
+  let (_, sameVoice, _) = try await transcribeFixture(
+    "transcription-3x.wav", separateSpeakers: true)
   #expect(sameVoice.map(\.speaker) == [1, 1, 1], "同じ声の 3 回は同じ話者")
 }
 
-@Test func whisperTokensDropSpecialTokensAndUseSegmentTimeWithoutWordTime() throws {
+@Test func whisperLinesDropSpecialTokensAndUseSegmentTimeWithoutWordTime() throws {
   let output = Data(
     #"""
     {"transcription":[{"offsets":{"from":1000,"to":2500},"text":"こんにちは","tokens":[
@@ -756,9 +759,28 @@ func speakerLabelsFollowVoiceWithBundledModels() async throws {
     """#.utf8)
 
   #expect(
-    try whisperTokens(output, duration: 2.5) == [
-      token(1.0, 1.4, "こん"), token(1.0, 2.5, "にちは"), token(2.0, 2.5, "赤[31m"),
+    try whisperLines(output, duration: 2.5) == [
+      WhisperLine(
+        start: 1.0, end: 2.5,
+        tokens: [token(1.0, 1.4, "こん"), token(1.0, 2.5, "にちは"), token(2.0, 2.5, "赤[31m")])
     ], "末尾 2.5 秒は録音の長さちょうどなのでそのまま")
+}
+
+@Test func whisperLinesSkipSegmentsWithoutWords() throws {
+  let output = Data(
+    #"""
+    {"transcription":[
+      {"offsets":{"from":0,"to":500},"text":"","tokens":[
+        {"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365},
+        {"text":"\n","offsets":{"from":0,"to":500},"id":1000}]},
+      {"offsets":{"from":1000,"to":1500},"text":"はい","tokens":[
+        {"text":"はい","offsets":{"from":1000,"to":1500},"id":1001}]}]}
+    """#.utf8)
+
+  #expect(
+    try whisperLines(output, duration: 2) == [
+      WhisperLine(start: 1.0, end: 1.5, tokens: [token(1.0, 1.5, "はい")])
+    ])
 }
 
 /// `from`・`to`(ミリ秒)の語「あ」を 1 つ持つ whisper-cli の JSON。
@@ -788,12 +810,22 @@ private func whisperWord(from: Int, to: Int) -> Data {
         #"{"transcription":[{"offsets":{"from":0,"to":40001},"text":"あ","tokens":[{"text":"あ","id":1000}]}]}"#
           .utf8), .timeOutOfRange
     ),
+    (
+      Data(
+        #"{"transcription":[{"offsets":{"from":0,"to":40001},"text":"あ","tokens":[{"text":"あ","offsets":{"from":0,"to":500},"id":1000}]}]}"#
+          .utf8), .timeOutOfRange
+    ),
+    (
+      Data(
+        #"{"transcription":[{"offsets":{"from":-1,"to":500},"text":"","tokens":[{"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365}]}]}"#
+          .utf8), .timeOutOfRange
+    ),
   ] as [(Data, WhisperOutputError)])
-func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputError) {
-  #expect(throws: reason) { try whisperTokens(output, duration: 10) }
+func whisperLinesRejectUnexpectedOutput(output: Data, reason: WhisperOutputError) {
+  #expect(throws: reason) { try whisperLines(output, duration: 10) }
 }
 
-@Test func whisperTokensClampTimesPastRecordingEndWithinLastWindow() throws {
+@Test func whisperLinesClampTimesPastRecordingEndWithinLastWindow() throws {
   // 実際の whisper-cli の出力の形: 最後の 30 秒の窓の無音に出た段落は、録音の長さを超えて窓の終わりまで伸びる。
   let output = Data(
     #"""
@@ -805,12 +837,16 @@ func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputErro
     """#.utf8)
 
   #expect(
-    try whisperTokens(output, duration: 10) == [
-      token(8.0, 9.5, "ご視聴"), token(9.54, 10.0, "ありがとう"), token(10.0, 10.0, "ございました"),
-    ], "録音の長さ + 30 秒ちょうどまで受け付け、時刻を録音の長さに収める")
+    try whisperLines(output, duration: 10) == [
+      WhisperLine(
+        start: 8.0, end: 37.16,
+        tokens: [
+          token(8.0, 9.5, "ご視聴"), token(9.54, 10.0, "ありがとう"), token(10.0, 10.0, "ございました"),
+        ])
+    ], "録音の長さ + 30 秒ちょうどまで受け付け、語の時刻だけを録音の長さに収める")
 }
 
-@Test func whisperTokensKeepTextTokenIDsBelowEndOfText() throws {
+@Test func whisperLinesKeepTextTokenIDsBelowEndOfText() throws {
   let output = Data(
     #"""
     {"transcription":[{"offsets":{"from":0,"to":1000},"text":"残る","tokens":[
@@ -818,7 +854,165 @@ func whisperTokensRejectUnexpectedOutput(output: Data, reason: WhisperOutputErro
       {"text":"<|endoftext|>","offsets":{"from":500,"to":1000},"id":50257}]}]}
     """#.utf8)
 
-  #expect(try whisperTokens(output, duration: 1) == [token(0, 0.5, "残る")])
+  #expect(
+    try whisperLines(output, duration: 1) == [
+      WhisperLine(start: 0, end: 1.0, tokens: [token(0, 0.5, "残る")])
+    ])
+}
+
+/// `start`〜`end` 秒の Whisper の段落。語は段落と同じ時刻の 1 個。
+private func line(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -> WhisperLine {
+  WhisperLine(start: start, end: end, tokens: [token(start, end, text)])
+}
+
+@Test func hallucinationOfKnownPhraseIsReplacedByHaasWordsInItsRange() {
+  let lines = [
+    line(1.0, 1.5, "こんにちは"), line(4.0, 6.0, "ご視聴 ありがとうございました!"), line(8.0, 8.5, "さようなら"),
+  ]
+  let haas = [token(1.0, 1.5, "こんにちわ"), token(4.2, 4.8, "はい"), token(8.0, 8.5, "さよなら")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(found == [Hallucination(lines: 1..<2, start: 4.0, end: 6.0)])
+  #expect(
+    replacing(found, in: lines, with: haas) == [
+      token(1.0, 1.5, "こんにちは"), token(4.2, 4.8, "はい"), token(8.0, 8.5, "さようなら"),
+    ], "幻聴の段落だけを、その範囲の Haas の語に替える")
+}
+
+@Test func hallucinationOfOdashoAtLineStartIsReplaced() {
+  let lines = [line(10.0, 12.0, "おだしょーそれでは始めます")]
+  let haas = [token(10.2, 10.8, "それでは"), token(11.0, 11.6, "始めます")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(found == [Hallucination(lines: 0..<1, start: 10.0, end: 12.0)])
+  #expect(replacing(found, in: lines, with: haas) == haas)
+}
+
+@Test func hallucinationsOfAdjacentLinesFormOneRange() {
+  let lines = [
+    line(0.0, 1.0, "ご視聴ありがとうございました"), line(1.0, 2.0, "おだしょー"), line(3.0, 4.0, "本題です"),
+    line(5.0, 6.0, "ご視聴ありがとうございました"),
+  ]
+  let haas = [token(0.2, 0.6, "えー"), token(3.0, 4.0, "本題"), token(5.2, 5.8, "以上")]
+
+  let found = hallucinations(in: lines)
+
+  #expect(
+    found == [
+      Hallucination(lines: 0..<2, start: 0.0, end: 2.0),
+      Hallucination(lines: 3..<4, start: 5.0, end: 6.0),
+    ])
+  #expect(
+    replacing(found, in: lines, with: haas) == [
+      token(0.2, 0.6, "えー"), token(3.0, 4.0, "本題です"), token(5.2, 5.8, "以上"),
+    ])
+}
+
+@Test func hallucinationOfSentenceRepeatedThreeTimesInARow() {
+  let three = [
+    line(1.0, 2.0, "ありがとうございます。"), line(2.5, 3.5, "ありがとうございます。"),
+    line(4.0, 5.0, "ありがとうございます。"),
+  ]
+
+  #expect(hallucinations(in: three) == [Hallucination(lines: 0..<3, start: 1.0, end: 5.0)])
+  #expect(
+    hallucinations(in: [line(0.0, 0.5, "では。")] + three) == [
+      Hallucination(lines: 1..<4, start: 1.0, end: 5.0)
+    ], "反復の前の段落は含めない")
+  #expect(
+    hallucinations(in: [line(0.0, 0.5, "ありがとうございます。"), line(0.6, 0.9, "本題です。")] + three) == [
+      Hallucination(lines: 2..<5, start: 1.0, end: 5.0)
+    ], "離れた同じ文は数えず、続いた範囲の段落だけ")
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "はい。はい。はい。")]) == [
+      Hallucination(lines: 0..<1, start: 1.0, end: 2.0)
+    ], "1 段落の中の 3 回")
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "はい。"), line(2.5, 3.5, "はい!はい")]) == [
+      Hallucination(lines: 0..<2, start: 1.0, end: 3.5)
+    ], "段落をまたいで続く 3 回")
+  #expect(hallucinations(in: Array(three.prefix(2))) == [], "2 回は相づちで普通に起きる")
+  #expect(hallucinations(in: [line(1.0, 2.0, "はい。はい。")]) == [])
+  #expect(
+    hallucinations(in: [line(1.0, 2.0, "。"), line(2.0, 3.0, "!"), line(3.0, 4.0, "。 。")]) == [],
+    "約物だけの文は数えない")
+}
+
+@Test func hallucinationsAreNotFoundInFixtureTranscript() {
+  // whisper-cli(-l ja -mc 0)が transcription-3x.wav に出した段落の本文(3 回目は約物なしで 7 段落に割れる)。
+  let texts = [
+    "これは、アマニュエンシスの動作確認に使う音声です。", "会議の録音を文字起こしして、議事録の下書きを作ります。", "今日の議題は3つあります。",
+    "1つ目は来月の予定、2つ目は予算の見直し、3つ目は新しい機能の検討です。", "それでは、始めましょう。",
+    "これは、アマニュエンシスの動作確認に使う音声です。", "会議の録音を文字起こしして、議事録の下書きを作ります。", "今日の議題は3つあります。",
+    "1つ目は来月の予定、2つ目は予算の見直し、3つ目は新しい機能の検討です。", "それでは、始めましょう。",
+    "これはアマニュエンシスの動作確認に使う音声です", "会議の録音を文字起こしして議事録の下書きを作ります", "今日の議題は3つあります",
+    "1つ目は来月の予定", "2つ目は予算の見直し", "3つ目は新しい機能の検討です", "それでは始めましょう",
+  ]
+  let lines = texts.enumerated().map {
+    line(Double($0.offset), Double($0.offset) + 0.9, $0.element)
+  }
+
+  #expect(hallucinations(in: lines) == [])
+}
+
+@Test func hallucinationPastRecordingEndDoesNotJoinLastParagraph() throws {
+  let output = Data(
+    #"""
+    {"transcription":[
+      {"offsets":{"from":8000,"to":9500},"text":"実際の語","tokens":[
+        {"text":"実際の語","offsets":{"from":8000,"to":9500},"id":1000}]},
+      {"offsets":{"from":12000,"to":13000},"text":"ご視聴ありがとうございました","tokens":[
+        {"text":"ご視聴ありがとうございました","offsets":{"from":12000,"to":13000},"id":1001}]}]}
+    """#.utf8)
+  let lines = try whisperLines(output, duration: 10)
+
+  #expect(hallucinations(in: lines) == [Hallucination(lines: 1..<2, start: 12.0, end: 13.0)])
+  let tokens = replacing(hallucinations(in: lines), in: lines, with: [])
+
+  #expect(tokens == [token(8.0, 9.5, "実際の語")])
+  #expect(paragraphs(tokens) == [TranscriptParagraph(start: 8.0, text: "実際の語")])
+}
+
+@Test func hallucinationInSilentRecordingLeavesNoUtterance() throws {
+  // whisper-cli(-l ja -mc 0)が 3 秒の無音に出した JSON の段落。
+  let output = Data(
+    #"""
+    {"transcription":[{"offsets":{"from":0,"to":29980},"text":"ご視聴ありがとうございました","tokens":[
+      {"text":"[_BEG_]","offsets":{"from":0,"to":0},"id":50365},
+      {"text":"ご","offsets":{"from":0,"to":1870},"id":9991},
+      {"text":"視","offsets":{"from":1870,"to":2990},"id":27333},
+      {"text":"聴","offsets":{"from":2990,"to":2990},"id":8171},
+      {"text":"ありがとうございました","offsets":{"from":2990,"to":2990},"id":38538},
+      {"text":"[_TT_1499]","offsets":{"from":29980,"to":29980},"id":51864}]}]}
+    """#.utf8)
+  let lines = try whisperLines(output, duration: 3)
+
+  #expect(hallucinations(in: lines) == [Hallucination(lines: 0..<1, start: 0, end: 29.98)])
+  let tokens = replacing(hallucinations(in: lines), in: lines, with: [])
+
+  #expect(tokens == [])
+  let transcript = Transcript(
+    meetingName: "2026-11-25_000000", duration: 3, model: "ggml-large-v3-turbo-q8_0.bin",
+    paragraphs: paragraphs(tokens))
+  #expect(transcript.markdown.hasSuffix("\n\n発話はありませんでした。\n"))
+}
+
+@Test func replacingTakesOnlyHaasWordsWhoseMidpointIsInRange() {
+  let lines = [line(4.0, 6.0, "ご視聴ありがとうございました")]
+  let haas = [
+    token(3.0, 4.98, "前"),
+    token(3.5, 4.5, "始"),
+    token(4.6, 5.0, "中"),
+    token(5.5, 6.5, "終"),
+    token(5.04, 7.0, "後"),
+  ]
+
+  #expect(
+    replacing(hallucinations(in: lines), in: lines, with: haas) == [
+      token(3.5, 4.5, "始"), token(4.6, 5.0, "中"), token(5.5, 6.5, "終"),
+    ], "中点が範囲の両端ちょうどの語は入り、外の語は入らない")
 }
 
 /// 引数を `whisper-args` に書き、`-f` の次の WAVE が無ければ 9 で終わる偽の whisper-cli の前置き。
@@ -836,12 +1030,15 @@ private let whisperTwoWords = #"""
   {"transcription":[{"offsets":{"from":1000,"to":4500},"text":"こんにちはさようなら","tokens":[{"text":"[_BEG_]","offsets":{"from":1000,"to":1000},"id":50365},{"text":"こんにちは","offsets":{"from":1000,"to":1500},"id":1000},{"text":"さようなら","offsets":{"from":4000,"to":4500},"id":1001}]},{"offsets":{"from":51000,"to":54500},"text":"こんにちはさようなら","tokens":[{"text":"こんにちは","offsets":{"from":51000,"to":51500},"id":1000},{"text":"さようなら","offsets":{"from":54000,"to":54500},"id":1001},{"text":"[_TT_100]","offsets":{"from":54500,"to":54500},"id":50465}]}]}
   """#
 
-/// Whisper を選んだ `fakeInstallation(diarize:withModel:)` に、`body` を本文とする偽の whisper-cli と空の Whisper のモデルを置く。
+/// Whisper を選んだ `fakeInstallation(diarize:withModel:asr:)` に、`body` を本文とする偽の whisper-cli と空の Whisper のモデルを置く。
 private func whisperInstallation(
-  _ body: String = "printf '%s' '\(whisperTwoWords)' > \"$out\"", withDiarizationModel: Bool = true
+  _ body: String = "printf '%s' '\(whisperTwoWords)' > \"$out\"", withDiarizationModel: Bool = true,
+  asr: String = twoWordsPerChunk
 ) throws -> SpeechInstallation {
-  var installation = try fakeInstallation(diarize: twoSpeakers, withModel: withDiarizationModel)
-    .selecting(.whisper)
+  var installation = try fakeInstallation(
+    diarize: twoSpeakers, withModel: withDiarizationModel, asr: asr
+  )
+  .selecting(.whisper)
   installation.whisperExecutable = try fakeSpeech(whisperPrelude + "\n" + body).executable
   try Data().write(to: installation.whisperModelFile)
   return installation
@@ -897,6 +1094,9 @@ extension LongRecordingTests {
     #expect(!FileManager.default.fileExists(atPath: whole + ".json"), "whisper-cli の JSON を消す")
     #expect(
       (try? arguments(installation)) == nil, "Haas の asr も diarize も呼ばない")
+    #expect(
+      !FileManager.default.fileExists(atPath: meeting.appending(path: "transcription.log").path),
+      "幻聴が無ければ transcription.log を書かない")
     #expect(
       try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
   }
@@ -969,6 +1169,107 @@ extension LongRecordingTests {
   }
 }
 
+/// 1 秒の「こんにちは」・4 秒の「さようなら」と、`from`〜`to` ミリ秒の「ご視聴ありがとうございました」の段落を出す whisper-cli の本文。
+private func whisperWithHallucination(from: Int, to: Int) -> String {
+  let json = """
+    {"transcription":[{"offsets":{"from":1000,"to":4500},"text":"こんにちはさようなら","tokens":[{"text":"こんにちは","offsets":{"from":1000,"to":1500},"id":1000},{"text":"さようなら","offsets":{"from":4000,"to":4500},"id":1001}]},{"offsets":{"from":\(from),"to":\(to)},"text":"ご視聴ありがとうございました","tokens":[{"text":"ご視聴ありがとうございました","offsets":{"from":\(from),"to":\(to)},"id":1002}]}]}
+    """
+  return "printf '%s' '\(json)' > \"$out\""
+}
+
+extension LongRecordingTests {
+  @Test func whisperHallucinationIsReplacedByHaasWordsOfOverlappingChunk() async throws {
+    let meeting = try meetingFolder()
+    let installation = try whisperInstallation(whisperWithHallucination(from: 51000, to: 55000))
+
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: false)
+
+    #expect(skip == nil)
+    #expect(
+      try transcript(of: meeting) == whisperTranscriptHeader + """
+        [00:00:01] こんにちは
+
+        [00:00:04] さようなら
+
+        [00:00:51] こんにちは
+
+        [00:00:54] さようなら
+
+        """, "幻聴の段落を、その時刻の Haas の語に替える")
+    let args = try arguments(installation)
+    #expect(
+      Array(args.prefix(5)) == [
+        "asr", installation.modelFile.path, "--timestamps", "--format", "json",
+      ])
+    #expect(
+      args.dropFirst(5).map { URL(filePath: $0).lastPathComponent } == ["chunk-0002.wav"],
+      "幻聴の時刻に重なる区間だけを Haas に渡す")
+    let lines = try log(of: meeting).split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(lines.first?.hasSuffix(" hallucinations replaced count=1") == true, "\(lines)")
+  }
+
+  @Test func whisperHallucinationPastRecordingEndIsDroppedWithoutHaas() async throws {
+    let meeting = try meetingFolder()
+    let installation = try whisperInstallation(whisperWithHallucination(from: 71000, to: 75000))
+
+    try await transcribe(meeting: meeting, installation: installation, separateSpeakers: false)
+
+    #expect(
+      try transcript(of: meeting) == whisperTranscriptHeader + """
+        [00:00:01] こんにちは
+
+        [00:00:04] さようなら
+
+        """)
+    #expect((try? arguments(installation)) == nil, "録音の外の区間では Haas を起動しない")
+    let lines = try log(of: meeting).split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(lines.first?.hasSuffix(" hallucinations replaced count=1") == true, "\(lines)")
+  }
+
+  @Test(
+    arguments: [
+      (
+        "echo broken >&2; exit 3",
+        "hallucinations failed error.type=exited status=3 stderr=broken\\n"
+      ),
+      (
+        #"echo "$HOME/x" >&2; exit 1"#,
+        "hallucinations failed error.type=exited status=1 stderr=~/x\\n"
+      ),
+      ("echo 'not json'", "hallucinations failed error.type=unparsable_output"),
+      (nil, "hallucinations failed error.type=launch_failed status=none stderr="),
+    ] as [(String?, String)])
+  func haasFailureForHallucinationKeepsWhisperLines(asr: String?, logLine: String) async throws {
+    let meeting = try meetingFolder()
+    let recording = try Data(contentsOf: meeting.appending(path: "recording.caf"))
+    let installation = try whisperInstallation(
+      whisperWithHallucination(from: 51000, to: 55000), asr: asr ?? "")
+    if asr == nil { try FileManager.default.removeItem(at: installation.executable) }
+
+    let skip = try await transcribe(
+      meeting: meeting, installation: installation, separateSpeakers: false)
+
+    #expect(skip == nil)
+    #expect(
+      try transcript(of: meeting) == whisperTranscriptHeader + """
+        [00:00:01] こんにちは
+
+        [00:00:04] さようなら
+
+        [00:00:51] ご視聴ありがとうございました
+
+        """, "起こし直せなければ Whisper の行を残す")
+    #expect(try Data(contentsOf: meeting.appending(path: "recording.caf")) == recording, "録音は変えない")
+    let lines = try log(of: meeting).split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(lines.first?.hasSuffix(" " + logLine) == true, "\(lines)")
+    #expect(!(try log(of: meeting)).contains(NSHomeDirectory()), "ホームのパスを出さない")
+  }
+}
+
 /// `.standard` の Whisper のモデルと、scripts/build-whisper.sh が作った whisper-cli。
 private let bundledWhisper = {
   var installation = SpeechInstallation.standard.selecting(.whisper)
@@ -993,7 +1294,7 @@ private let whisperE2EEnabled =
   func transcribeFixtureWithWhisper(name: String, length: String, thirdStart: Double) async throws {
     let reference = try String(contentsOf: sampleText, encoding: .utf8)
 
-    let (header, paragraphs) = try await transcribeFixture(
+    let (header, paragraphs, log) = try await transcribeFixture(
       name, separateSpeakers: false, installation: bundledWhisper)
 
     #expect(
@@ -1003,6 +1304,7 @@ private let whisperE2EEnabled =
       ])
     #expect(paragraphs.count == 3, "回ごとに 1 段落")
     #expect(paragraphs.allSatisfy { $0.speaker == nil }, "オフでは話者のラベルが無い")
+    #expect(log == nil, "幻聴の無い録音では transcription.log を書かない")
     for (paragraph, start) in zip(paragraphs, [1.0, 26.6, thirdStart]) {
       let cer = characterErrorRate(paragraph.text, reference: reference)
       print("cer whisper \(name) [\(paragraph.seconds)] \(String(format: "%.4f", cer))")
@@ -1016,11 +1318,11 @@ private let whisperE2EEnabled =
 
   @Test(.enabled(if: whisperE2EEnabled && bundledWhisper.hasDiarizationModel))
   func speakerLabelsFollowVoiceWithWhisper() async throws {
-    let (_, labeled) = try await transcribeFixture(
+    let (_, labeled, _) = try await transcribeFixture(
       "transcription-3x-two-voices.wav", separateSpeakers: true, installation: bundledWhisper)
     #expect(labeled.map(\.speaker) == [1, 2, 1], "2 回目の別の声だけが話者 2")
 
-    let (_, sameVoice) = try await transcribeFixture(
+    let (_, sameVoice, _) = try await transcribeFixture(
       "transcription-3x.wav", separateSpeakers: true, installation: bundledWhisper)
     #expect(sameVoice.map(\.speaker) == [1, 1, 1], "同じ声の 3 回は同じ話者")
   }
@@ -1029,11 +1331,13 @@ private let whisperE2EEnabled =
   func transcribeFixtureWithTrailingSilenceWithWhisper() async throws {
     let reference = try String(contentsOf: sampleText, encoding: .utf8)
 
-    let paragraphs = try await transcribeWithTrailingSilence(
+    let (paragraphs, log) = try await transcribeWithTrailingSilence(
       "transcription-3x.wav", seconds: 30, installation: bundledWhisper)
 
-    #expect(paragraphs.count >= 3, "末尾の無音に録音の長さを超える時刻の段落が付いても transcript.md を書く")
-    for (paragraph, start) in zip(paragraphs.prefix(3), [1.0, 26.6, 52.2]) {
+    #expect(paragraphs.count == 3, "末尾の無音の幻聴の段落を除く")
+    #expect(!paragraphs.contains { $0.text.contains("ご視聴") })
+    #expect(log?.hasSuffix(" hallucinations replaced count=1\n") == true, "\(log ?? "nil")")
+    for (paragraph, start) in zip(paragraphs, [1.0, 26.6, 52.2]) {
       let cer = characterErrorRate(paragraph.text, reference: reference)
       print(
         "cer whisper transcription-3x.wav+30s [\(paragraph.seconds)] \(String(format: "%.4f", cer))"
@@ -1045,12 +1349,27 @@ private let whisperE2EEnabled =
         "段落の時刻 \(paragraph.seconds) が回の開始 \(start) の付近")
     }
   }
+
+  @Test(.enabled(if: whisperE2EEnabled))
+  func silentRecordingWithWhisperSaysNoUtterance() async throws {
+    let meeting = try temporaryDirectory("2026-11-06_101500")
+    try writeStereoCAF(to: meeting.appending(path: "recording.caf"), seconds: 3) { _ in 0 }
+
+    try await transcribe(meeting: meeting, installation: bundledWhisper, separateSpeakers: false)
+
+    let written = try transcript(of: meeting)
+    print("transcript silence-3s \(meeting.path)\n\(written)")
+    #expect(written.hasSuffix("- モデル: ggml-large-v3-turbo-q8_0.bin\n\n発話はありませんでした。\n"))
+    let logged = try log(of: meeting)
+    #expect(logged.hasSuffix(" hallucinations replaced count=1\n"), "\(logged)")
+  }
 }
 
-/// フィクスチャの後に `seconds` 秒の無音を足して右チャンネルに置いた録音を文字起こしし、段落の時刻(秒)と本文を返す。
+/// フィクスチャの後に `seconds` 秒の無音を足して右チャンネルに置いた録音を文字起こしし、段落の時刻(秒)と本文と、
+/// `transcription.log` の中身(無ければ nil)を返す。
 private func transcribeWithTrailingSilence(
   _ name: String, seconds silence: Double, installation: SpeechInstallation
-) async throws -> [(seconds: Int, text: String)] {
+) async throws -> (paragraphs: [(seconds: Int, text: String)], log: String?) {
   let (values, rate, _) = try samples(of: fixtures.appending(path: name))
   let meeting = try temporaryDirectory("2026-11-06_101500")
   try writeStereoCAF(
@@ -1065,10 +1384,11 @@ private func transcribeWithTrailingSilence(
   let transcript = try String(
     contentsOf: meeting.appending(path: "transcript.md"), encoding: .utf8)
   print("transcript \(name)+\(silence)s \(meeting.path)\n\(transcript)")
-  return transcript.split(separator: "\n").compactMap { line in
+  let paragraphs = transcript.split(separator: "\n").compactMap { line -> (Int, String)? in
     guard let match = String(line).wholeMatch(of: /\[(\d{2}):(\d{2}):(\d{2})\] (.+)/) else {
       return nil
     }
     return (Int(match.1)! * 3600 + Int(match.2)! * 60 + Int(match.3)!, String(match.4))
   }
+  return (paragraphs, try? log(of: meeting))
 }
